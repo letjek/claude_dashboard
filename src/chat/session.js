@@ -57,15 +57,29 @@ export function createInputQueue() {
   };
 }
 
+// A session that dies because the account ran out of quota is not "ended unexpectedly", and saying
+// so hides the one fact that matters: it can be continued once the limit resets. The SDK reports the
+// limit as its own message type, so the last one seen is what classifies the death.
+const RATE_LIMITED = /rate.?limit|usage limit|quota/i;
+
 export function createSessionManager({
   store, hub, now = Date.now,
   permissions,
   sdk = defaultSdk,
   model,
   maxTurns,
+  // Called once when a session stops without being torn down on purpose. The runs a dead session
+  // dispatched are still open in the database, and nothing else notices: the CLI that would have
+  // fired SessionEnd is the process that just died. Without this the rail keeps claiming those
+  // subagents are alive until the 30-minute sweeper gets to them.
+  onSessionEnd,
 }) {
   const live = new Map();       // projectPath -> session
   const starting = new Map();   // projectPath -> Promise<session>, so racing sends start one session
+  // Outlive the session objects on purpose: both are read after the session is gone, to explain why
+  // it went and to offer the resume.
+  const lastRateLimit = new Map();  // projectPath -> SDKRateLimitInfo
+  const lastStop = new Map();       // projectPath -> { reason, at, resetsAt }
 
   const emit = (event, projectPath, data) => hub.broadcast(event, { projectPath, ts: now(), ...data });
 
@@ -162,7 +176,9 @@ export function createSessionManager({
       }
       if (!session.stopping) {
         live.delete(projectPath);
-        emit('chat.status', projectPath, { state: 'closed', sessionId: session.sessionId });
+        const stop = classifyStop(session, null);
+        emit('chat.status', projectPath, { state: 'closed', sessionId: session.sessionId, ...stop });
+        announceEnd(session, stop);
       }
     } catch (err) {
       if (session.stopping) return;             // we tore it down on purpose
@@ -172,15 +188,51 @@ export function createSessionManager({
       // directory. Drop the id so the user is not stuck retrying into the same failure.
       const failedResume = session.resume !== null && session.startedFrom !== 'init';
       if (failedResume) store.clearSession(projectPath);
+      const stop = classifyStop(session, err);
       emit('chat.error', projectPath, {
         message: failedResume
           ? 'The previous conversation could not be resumed and has been cleared. Send your message again to start a fresh one.'
-          : 'The Claude session ended unexpectedly.',
+          : stop.stopReason === 'rate_limit'
+            ? 'The rate limit ran out and the session stopped. It can be continued once the limit resets.'
+            : 'The Claude session ended unexpectedly.',
         detail: [describe(err), ...session.stderr].filter(Boolean).join('\n').slice(0, 2000),
         fatal: true,
+        ...stop,
       });
+      announceEnd(session, stop);
     } finally {
       permissions?.abortProject(projectPath);
+    }
+  }
+
+  // Why a session stopped, from the last thing it said rather than from a guess. A `rejected` rate
+  // limit is definitive; the stderr and error text are the fallback for a CLI that died before it
+  // could report one.
+  function classifyStop(session, err) {
+    const info = lastRateLimit.get(session.projectPath) ?? null;
+    const rejected = info?.status === 'rejected' || info?.overageStatus === 'rejected';
+    const mentioned = RATE_LIMITED.test([describe(err), ...session.stderr].join('\n'));
+    const stopReason = rejected || (err != null && mentioned) ? 'rate_limit' : 'session_ended';
+    const resetsAt = stopReason === 'rate_limit'
+      ? (typeof info?.resetsAt === 'number' ? info.resetsAt : null)
+      : null;
+    const stop = { stopReason, resetsAt, rateLimitType: info?.rateLimitType ?? null };
+    lastStop.set(session.projectPath, { ...stop, at: now() });
+    return stop;
+  }
+
+  // Never lets a listener's throw reach the pump: this runs on the way out of a session that has
+  // already failed once, and a second failure here would land on an unawaited promise.
+  function announceEnd(session, stop) {
+    try {
+      onSessionEnd?.({
+        projectPath: session.projectPath,
+        sessionId: session.sessionId ?? null,
+        reason: stop.stopReason,
+        resetsAt: stop.resetsAt,
+      });
+    } catch (err) {
+      emit('chat.error', session.projectPath, { message: 'Could not tidy up after the session ended.', detail: describe(err), fatal: false });
     }
   }
 
@@ -196,8 +248,13 @@ export function createSessionManager({
           elapsedSeconds: message.elapsed_time_seconds ?? null, taskId: message.task_id ?? null,
           subagentType: message.subagent_type ?? null,
         });
-      case 'rate_limit_event':
-        return warning(session, 'rate_limit_event', message.rate_limit_info ?? null);
+      case 'rate_limit_event': {
+        const info = message.rate_limit_info ?? null;
+        // Kept per project rather than per session: the session object is dropped the moment the
+        // pump ends, and this is exactly what the pump needs to read on its way out.
+        if (info) lastRateLimit.set(session.projectPath, info);
+        return warning(session, 'rate_limit_event', info);
+      }
       case 'auth_status':
         return warning(session, 'auth_status', {
           isAuthenticating: message.isAuthenticating === true, error: message.error ?? null,
@@ -213,6 +270,11 @@ export function createSessionManager({
     switch (message.subtype) {
       case 'init': {
         session.startedFrom = 'init';
+        // A session that reached init is running again, so the previous death has been answered and
+        // its rate-limit episode is over. Leaving either in place would keep offering a resume for a
+        // conversation that is already resumed.
+        lastStop.delete(session.projectPath);
+        lastRateLimit.delete(session.projectPath);
         if (typeof message.session_id === 'string') {
           session.sessionId = message.session_id;
           store.setSessionId({ projectPath: session.projectPath, sessionId: message.session_id, at: now() });
@@ -351,12 +413,18 @@ export function createSessionManager({
     get(projectPath) {
       const session = live.get(projectPath);
       const stored = store.getSession(projectPath);
+      const stop = lastStop.get(projectPath) ?? null;
       return {
         projectPath,
         running: session !== undefined,
         sessionId: session?.sessionId ?? stored?.sessionId ?? null,
         startedAt: session?.startedAt ?? null,
         pendingPermissions: permissions?.list(projectPath) ?? [],
+        // Survives a browser reload: the page has to be able to offer the resume again without
+        // having witnessed the death itself.
+        stopReason: stop?.stopReason ?? null,
+        resetsAt: stop?.resetsAt ?? null,
+        rateLimit: lastRateLimit.get(projectPath) ?? null,
       };
     },
 

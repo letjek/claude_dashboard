@@ -144,6 +144,12 @@ export function chatRoutes({ sessions, permissions, chat, projects, now = Date.n
           sessionId: state.sessionId,
           running: state.running,
           pendingPermissions: state.pendingPermissions,
+          // A page loaded after the session already died has witnessed none of the events that
+          // said why. Without these it would show an idle composer and no hint that the
+          // conversation is waiting on a rate limit that has not lifted yet.
+          stopReason: state.stopReason ?? null,
+          resetsAt: state.resetsAt ?? null,
+          rateLimit: state.rateLimit ?? null,
           messages: chat.list(projectPath, historyLimit),
         });
       },

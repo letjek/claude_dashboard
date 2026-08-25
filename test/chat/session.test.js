@@ -358,3 +358,178 @@ test('an empty message is refused before anything is started or stored', async (
   assert.equal(store.list('/p/one').length, 0);
   await sessions.close();
 });
+
+// ---------------------------------------------------------------------------
+// A session that dies because the account ran out of quota.
+//
+// The failure this covers is the one the user actually hit: the CLI process died with its rate
+// limit exhausted, so it never fired the SessionEnd hook, so the subagents it had dispatched sat in
+// the live rail claiming to be alive for the full thirty minutes until the sweeper reached them.
+
+function endHarness({ now = () => 1000 } = {}) {
+  const ends = [];
+  const events = [];
+  const hub = {
+    broadcast(event, data) { events.push({ event, data }); },
+    of(name) { return events.filter((e) => e.event === name).map((e) => e.data); },
+  };
+  const store = createChatRepo(openDb(join(mkdtempSync(join(tmpdir(), 'ap-end-')), 'data.db')));
+  const sdk = createFakeSdk();
+  const permissions = createPermissionGate({ hub, now });
+  const sessions = createSessionManager({
+    store, hub, now, sdk, permissions,
+    onSessionEnd: (info) => ends.push(info),
+  });
+  return { hub, sdk, sessions, ends };
+}
+
+const rateLimitEvent = (over = {}) => ({
+  type: 'rate_limit_event',
+  uuid: 'u-rl',
+  session_id: 'sess-1',
+  rate_limit_info: { status: 'rejected', resetsAt: 99_000, rateLimitType: 'five_hour', ...over },
+});
+
+test('a session that dies after a rejected rate limit is reported as rate limited, with its reset time', async () => {
+  const { sdk, sessions, ends, hub } = endHarness();
+  await sessions.send('/p/one', 'go');
+  const call = sdk.last();
+  call.outbox.push(initMessage());
+  call.outbox.push(rateLimitEvent());
+  await settled();
+  call.outbox.fail(new Error('stream closed'));
+  await settled();
+
+  assert.deepEqual(ends, [{
+    projectPath: '/p/one', sessionId: 'sess-1', reason: 'rate_limit', resetsAt: 99_000,
+  }]);
+
+  // And the user is told the real reason rather than "ended unexpectedly", which is what hid it.
+  const [error] = hub.of('chat.error');
+  assert.match(error.message, /rate limit ran out/i);
+  assert.equal(error.stopReason, 'rate_limit');
+  assert.equal(error.resetsAt, 99_000);
+  await sessions.close();
+});
+
+test('a session that just ends is not blamed on a rate limit it never hit', async () => {
+  const { sdk, sessions, ends, hub } = endHarness();
+  await sessions.send('/p/one', 'go');
+  const call = sdk.last();
+  call.outbox.push(initMessage());
+  await settled();
+  call.outbox.end();
+  await settled();
+
+  assert.deepEqual(ends, [{
+    projectPath: '/p/one', sessionId: 'sess-1', reason: 'session_ended', resetsAt: null,
+  }]);
+  const closed = hub.of('chat.status').filter((s) => s.state === 'closed');
+  assert.equal(closed.at(-1).stopReason, 'session_ended');
+  assert.equal(closed.at(-1).resetsAt, null);
+  await sessions.close();
+});
+
+test('a warning-level rate limit is not a cause of death', async () => {
+  const { sdk, sessions, ends } = endHarness();
+  await sessions.send('/p/one', 'go');
+  const call = sdk.last();
+  call.outbox.push(initMessage());
+  call.outbox.push(rateLimitEvent({ status: 'allowed_warning' }));
+  await settled();
+  call.outbox.end();
+  await settled();
+
+  assert.equal(ends.at(-1).reason, 'session_ended');
+  await sessions.close();
+});
+
+test('a rate limit named only in stderr is still recognised', async () => {
+  const { sdk, sessions, ends } = endHarness();
+  await sessions.send('/p/one', 'go');
+  const call = sdk.last();
+  call.options.stderr('Claude usage limit reached');
+  call.outbox.push(initMessage());
+  await settled();
+  call.outbox.fail(new Error('exited with code 1'));
+  await settled();
+
+  assert.equal(ends.at(-1).reason, 'rate_limit');
+  // Nothing told us when it lifts, so nothing is claimed: the dashboard offers the manual button.
+  assert.equal(ends.at(-1).resetsAt, null);
+  await sessions.close();
+});
+
+test('a deliberate teardown reports no end at all', async () => {
+  const { sessions, ends } = endHarness();
+  await sessions.send('/p/one', 'go');
+  await sessions.reset('/p/one');
+  await settled();
+  assert.deepEqual(ends, [], 'stopping a session on purpose is not a session dying');
+  await sessions.close();
+});
+
+test('the stop reason survives for a page that loads after the session is gone', async () => {
+  const { sdk, sessions } = endHarness();
+  await sessions.send('/p/one', 'go');
+  const call = sdk.last();
+  call.outbox.push(initMessage());
+  call.outbox.push(rateLimitEvent());
+  await settled();
+  call.outbox.fail(new Error('stream closed'));
+  await settled();
+
+  const state = sessions.get('/p/one');
+  assert.equal(state.running, false);
+  assert.equal(state.stopReason, 'rate_limit');
+  assert.equal(state.resetsAt, 99_000);
+  assert.equal(state.rateLimit.rateLimitType, 'five_hour');
+  await sessions.close();
+});
+
+test('a session that reaches init again clears the previous death', async () => {
+  const { sdk, sessions } = endHarness();
+  await sessions.send('/p/one', 'go');
+  const first = sdk.last();
+  first.outbox.push(initMessage());
+  first.outbox.push(rateLimitEvent());
+  await settled();
+  first.outbox.fail(new Error('stream closed'));
+  await settled();
+  assert.equal(sessions.get('/p/one').stopReason, 'rate_limit');
+
+  await sessions.send('/p/one', 'again');
+  sdk.last().outbox.push(initMessage());
+  await settled();
+
+  const state = sessions.get('/p/one');
+  assert.equal(state.stopReason, null, 'a live session is not still waiting on a limit that lifted');
+  assert.equal(state.resetsAt, null);
+  await sessions.close();
+});
+
+test('a listener that throws on the way out does not take the pump down with it', async () => {
+  const events = [];
+  const hub = { broadcast(event, data) { events.push({ event, data }); } };
+  const store = createChatRepo(openDb(join(mkdtempSync(join(tmpdir(), 'ap-end2-')), 'data.db')));
+  const sdk = createFakeSdk();
+  const now = () => 1000;
+  const sessions = createSessionManager({
+    store, hub, now, sdk,
+    permissions: createPermissionGate({ hub, now }),
+    onSessionEnd: () => { throw new Error('listener blew up'); },
+  });
+
+  await sessions.send('/p/one', 'go');
+  const call = sdk.last();
+  call.outbox.push(initMessage());
+  await settled();
+  call.outbox.end();
+  await settled();
+
+  const reported = events.filter((e) => e.event === 'chat.error').map((e) => e.data);
+  assert.equal(reported.length, 1);
+  assert.equal(reported[0].fatal, false);
+  assert.match(reported[0].message, /tidy up/i);
+  await sessions.close();
+});

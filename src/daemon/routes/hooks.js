@@ -1,6 +1,6 @@
 // src/daemon/routes/hooks.js
 import { planActions } from '../../core/correlator.js';
-import { json, readBody } from './body.js';
+import { json, readBody, readJson } from './body.js';
 
 export function applyActions(actions, { runs, sessions, hub }) {
   for (const action of actions) {
@@ -86,6 +86,39 @@ export function runsRoute({ runs }) {
   return {
     method: 'GET',
     path: '/api/runs',
+    // listRecent already leaves out anything the user dismissed, which is what makes "Clear
+    // finished" survive a reload: the rows are gone from the snapshot the dashboard boots from,
+    // not merely from the rail's own memory.
     handler: (_req, res) => json(res, 200, { active: runs.listActive(), recent: runs.listRecent(200) }),
+  };
+}
+
+// One press of "Clear finished" sends the rows the rail is showing, and the rail shows a bounded
+// window of them. A cap turns a malformed or hostile body into a 400 instead of an unbounded write
+// loop inside a single request.
+const MAX_DISMISS_IDS = 500;
+
+export function runsDismissRoute({ runs, hub, now = Date.now }) {
+  return {
+    // Mutating, so `stateChanging: true` and not `public`: the daemon's Origin + token guard has to
+    // run first, or a page on another 127.0.0.1 port could clear the rail through the browser.
+    method: 'POST',
+    path: '/api/runs/dismiss',
+    stateChanging: true,
+    handler: async (req, res) => {
+      const body = await readJson(req, res);
+      if (body === undefined) return;
+      const { ids } = body;
+      if (!Array.isArray(ids) || ids.length > MAX_DISMISS_IDS) return json(res, 400, { error: 'bad_ids' });
+
+      // A stray non-string entry is dropped rather than failing the whole call: the other ids name
+      // real rows the user asked to clear, and refusing all of them would leave the rail showing
+      // rows the user has already dismissed once.
+      const dismissed = runs.dismiss(ids.filter((id) => typeof id === 'string'), now());
+      // Silence when nothing changed. A replayed request, or one naming only running runs, must not
+      // make every other open tab process a dismissal that did not happen.
+      if (dismissed.length > 0) hub.broadcast('run.dismiss', { ids: dismissed });
+      json(res, 200, { dismissed });
+    },
   };
 }

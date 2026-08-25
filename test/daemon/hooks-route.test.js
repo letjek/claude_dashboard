@@ -9,7 +9,7 @@ import { createRunsRepo } from '../../src/store/runs.js';
 import { createSessionsRepo } from '../../src/store/sessions.js';
 import { createHub } from '../../src/daemon/sse.js';
 import { createServer } from '../../src/daemon/server.js';
-import { hooksRoute, runsRoute } from '../../src/daemon/routes/hooks.js';
+import { hooksRoute, runsRoute, runsDismissRoute } from '../../src/daemon/routes/hooks.js';
 import { startSweeper } from '../../src/core/sweeper.js';
 
 const TOKEN = 'd'.repeat(64);
@@ -24,7 +24,7 @@ async function boot() {
   const events = [];
   hub.add({ write: (c) => events.push(c), end() {}, on() {}, writeHead() {}, flushHeaders() {} });
   const server = createServer({ token: TOKEN, port: 0, hub,
-    routes: [hooksRoute({ runs, sessions, hub, now }), runsRoute({ runs })] });
+    routes: [hooksRoute({ runs, sessions, hub, now }), runsRoute({ runs }), runsDismissRoute({ runs, hub, now })] });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const post = (body) => fetch(`${base}/api/hooks`, {
@@ -32,7 +32,12 @@ async function boot() {
     headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
     body: typeof body === 'string' ? body : JSON.stringify(body),
   });
-  return { server, runs, sessions, post, base, events };
+  const dismiss = (body) => fetch(`${base}/api/runs/dismiss`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', origin: base },
+    body: typeof body === 'string' ? body : JSON.stringify(body),
+  });
+  return { server, runs, sessions, post, dismiss, base, events };
 }
 
 const pre = {
@@ -220,5 +225,127 @@ test('a genuine PostToolUse after a stale still records the real result', async 
   assert.equal(row.durationMs, 1_861_000);
   assert.equal(row.resultPreview, 'all done');
   assert.match(events.join(''), /event: run\.close/, 'the recovery is reported to the dashboard');
+  server.close();
+});
+
+// The bug the user hit: "Clear finished" emptied the rail, and reloading the page brought every row
+// straight back, because the dismissal lived in component state and never reached the daemon.
+test('a dismissed run is gone from the snapshot a reload reads', async () => {
+  const { server, runs, post, dismiss, base } = await boot();
+  await post(pre);
+  clock += 5000;
+  await post({ ...pre, hook_event_name: 'PostToolUse', tool_response: 'done' });
+
+  const res = await dismiss({ ids: ['s1:tu_1'] });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { dismissed: ['s1:tu_1'] });
+
+  const snapshot = await (await fetch(`${base}/api/runs`, { headers: { authorization: `Bearer ${TOKEN}` } })).json();
+  assert.deepEqual(snapshot.recent, []);
+  assert.deepEqual(snapshot.active, []);
+  assert.ok(runs.get('s1:tu_1'), 'the row is hidden, not deleted');
+  server.close();
+});
+
+// A second browser tab is showing the same rail. It has no way to learn the rows went away unless
+// the daemon tells it.
+test('dismissing broadcasts run.dismiss once, with the ids that actually changed', async () => {
+  const { server, post, dismiss, events } = await boot();
+  await post(pre);
+  clock += 5000;
+  await post({ ...pre, hook_event_name: 'PostToolUse', tool_response: 'done' });
+  events.length = 0;
+
+  await dismiss({ ids: ['s1:tu_1', 'ghost'] });
+  const frames = events.join('');
+  assert.equal(frames.match(/event: run\.dismiss/g)?.length, 1);
+  assert.deepEqual(JSON.parse(/event: run\.dismiss\ndata: (.*)\n/.exec(frames)[1]), { ids: ['s1:tu_1'] });
+  server.close();
+});
+
+test('a dismissal that changed nothing is not broadcast at all', async () => {
+  const { server, post, dismiss, events } = await boot();
+  await post(pre);
+  clock += 5000;
+  await post({ ...pre, hook_event_name: 'PostToolUse', tool_response: 'done' });
+  await dismiss({ ids: ['s1:tu_1'] });
+  events.length = 0;
+
+  const repeat = await dismiss({ ids: ['s1:tu_1', 'ghost'] });
+  assert.deepEqual(await repeat.json(), { dismissed: [] });
+  assert.doesNotMatch(events.join(''), /event: run\.dismiss/);
+  server.close();
+});
+
+// However the request is shaped, it must be impossible to hide an agent that is still working.
+test('the route refuses to dismiss a running run', async () => {
+  const { server, runs, post, dismiss, events } = await boot();
+  await post(pre);
+  events.length = 0;
+
+  const res = await dismiss({ ids: ['s1:tu_1'] });
+  assert.deepEqual(await res.json(), { dismissed: [] });
+  assert.equal(runs.listActive().length, 1);
+  assert.doesNotMatch(events.join(''), /event: run\.dismiss/);
+  server.close();
+});
+
+test('the route rejects ids that are not a list, and a list that is too long', async () => {
+  const { server, dismiss } = await boot();
+  for (const body of [{}, { ids: 's1:tu_1' }, { ids: null }, { ids: { 0: 'a' } }]) {
+    const res = await dismiss(body);
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: 'bad_ids' });
+  }
+  const long = await dismiss({ ids: Array.from({ length: 501 }, (_, i) => `r${i}`) });
+  assert.equal(long.status, 400);
+  assert.deepEqual(await long.json(), { error: 'bad_ids' });
+
+  const atLimit = await dismiss({ ids: Array.from({ length: 500 }, (_, i) => `r${i}`) });
+  assert.equal(atLimit.status, 200, '500 is accepted; 501 is not');
+  server.close();
+});
+
+// One bad entry must not cost the user the rows they really asked to clear.
+test('a non-string entry is ignored rather than failing the whole call', async () => {
+  const { server, post, dismiss } = await boot();
+  await post(pre);
+  clock += 5000;
+  await post({ ...pre, hook_event_name: 'PostToolUse', tool_response: 'done' });
+
+  const res = await dismiss({ ids: [null, 7, { id: 's1:tu_1' }, 's1:tu_1'] });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { dismissed: ['s1:tu_1'] });
+  server.close();
+});
+
+test('the dismiss route requires a token and refuses a foreign origin', async () => {
+  const { server, base } = await boot();
+  const unauthenticated = await fetch(`${base}/api/runs/dismiss`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids: [] }),
+  });
+  assert.equal(unauthenticated.status, 401);
+
+  const foreign = await fetch(`${base}/api/runs/dismiss`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', origin: 'http://127.0.0.1:9' },
+    body: JSON.stringify({ ids: [] }),
+  });
+  assert.equal(foreign.status, 403);
+  server.close();
+});
+
+// SessionEnd is the case that started this: the process is gone, nobody will ever report for these
+// runs, and the rail has to be able to say why rather than showing STALE with no explanation.
+test('SessionEnd records why the run stopped and says so in the broadcast', async () => {
+  const { server, runs, post, events } = await boot();
+  await post(pre);
+  events.length = 0;
+  clock += 4000;
+  await post({ hook_event_name: 'SessionEnd', session_id: 's1', cwd: '/proj' });
+
+  assert.equal(runs.get('s1:tu_1').stopReason, 'session_ended');
+  const payload = JSON.parse(/event: run\.close\ndata: (.*)\n/.exec(events.join(''))[1]);
+  assert.equal(payload.stopReason, 'session_ended');
   server.close();
 });

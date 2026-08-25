@@ -68,6 +68,16 @@ const ADDED_COLUMNS = [
   // The subagent's own id, reported both when a background dispatch is launched and when any
   // subagent stops. It is the only exact join between the two.
   { table: 'runs', column: 'agent_id', type: 'TEXT' },
+  // Why a run stopped without ever reporting for itself: 'rate_limit', 'session_ended' or 'swept',
+  // and NULL for one that closed normally. Deliberately not a fourth `status` value: the close
+  // statement's `WHERE status IN ('running', 'stale')` is what lets a genuine late PostToolUse
+  // correct a staled row into a real `done`, and a run parked under a new status would fall outside
+  // that clause and be stranded forever. The reason sits beside the status instead of replacing it.
+  { table: 'runs', column: 'stop_reason', type: 'TEXT' },
+  // When the user cleared the row out of the live rail. The rail used to keep this in component
+  // state, so "Clear finished" held only until the page was reloaded and the snapshot served the
+  // same rows again.
+  { table: 'runs', column: 'dismissed_at', type: 'INTEGER' },
 ];
 
 function migrate(db) {

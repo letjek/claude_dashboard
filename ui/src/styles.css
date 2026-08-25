@@ -177,6 +177,16 @@ main {
   white-space: nowrap;
 }
 
+/* Why a stopped row stopped, under the description and visible without expanding the row. It wraps
+   instead of eliding: this is the sentence that stops a dead row reading as a live one, and half of
+   it would be worse than none. Its own grid row, so it can never land on top of `.doing`. */
+.stopped {
+  grid-column: 2 / -1;
+  grid-row: 4;
+  font-size: 11px;
+  color: var(--stale);
+}
+
 .run-detail {
   padding: 0 0 10px 18px;
   font-size: 12px;
@@ -754,6 +764,22 @@ pre:focus-visible {
 .chat-error summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 6px; }
 .chat-error .raw { margin-top: 6px; color: var(--text); }
 
+/* The rate-limit banner is a `.notice` that has to hold two sentences and a button, so it stacks
+   rather than running as one line. It sits directly above the composer and must not push it off
+   screen, hence no margin of its own. */
+.rate-limit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+}
+
+.rate-limit p { margin: 0; }
+
+/* The countdown is the one number in here, and reads as one. */
+.rate-limit .mono { font-variant-numeric: tabular-nums; color: var(--text); }
+
 .activity-line {
   display: flex;
   align-items: center;
@@ -1136,3 +1162,181 @@ pre:focus-visible {
   .chat { height: auto; }
   .transcript { max-height: 60vh; }
 }
+
+/* ---------------------------------------------------------------- catalog create forms */
+
+.page-actions { margin: 0 0 16px; }
+
+.catalog-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 620px;
+}
+
+.catalog-form h3 {
+  margin: 0;
+  font-family: inherit;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.field { display: flex; flex-direction: column; gap: 4px; }
+
+.field > label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.field input,
+.field textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+/* Everything typed here ends up in a file verbatim, so the two free-form fields are monospace and
+   wrap rather than scroll sideways — a prompt you cannot read back is a prompt you cannot check. */
+.field textarea {
+  font-family: var(--mono);
+  font-size: 12px;
+  resize: vertical;
+  min-height: 90px;
+}
+
+.hint { margin: 0; font-size: 11px; color: var(--muted); }
+.hint.bad { color: var(--stale); }
+
+.scope-choice {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  margin: 0;
+  padding: 8px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scope-choice legend {
+  padding: 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.scope-choice label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.scope-choice label:has(input:disabled) { color: var(--muted); cursor: not-allowed; }
+.scope-choice .mono { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+
+.catalog-form-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.catalog-form .notice { margin: 0; }
+
+/* ---------------------------------------------------------------- directory picker */
+
+.picker {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.picker-head { display: flex; align-items: baseline; gap: 8px; }
+
+.picker-head h3 {
+  margin: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.picker-head .btn.subtle { margin-left: auto; }
+
+.picker-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.picker-crumb {
+  font: inherit;
+  font-family: var(--mono);
+  background: none;
+  border: none;
+  border-radius: 3px;
+  padding: 1px 3px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.picker-crumb:hover { color: var(--text); background: var(--line); }
+
+.picker-up { align-self: flex-start; }
+
+/* Bounded on purpose: a home directory with eighty folders in it would otherwise stretch the sidebar
+   to a height nothing on the page can scroll back from. */
+.picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: block;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.picker-list li + li { border-top: 1px solid var(--line); }
+
+.picker-entry {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.picker-entry:hover { background: var(--line); }
+.picker-name { min-width: 0; overflow-wrap: anywhere; }
+.picker-entry .badge { flex: none; }
+
+.picker-path {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.picker .empty { font-size: 12px; }
+.picker .notice { margin: 0; }

@@ -13,6 +13,8 @@ export function startSweeper({
   const tick = () => {
     const t = now();
     const before = new Set(runs.listActive().map((r) => r.id));
+    // Staling here records stop_reason 'swept' on the row, so the broadcast below carries why the
+    // run ended: nobody ever reported for it, we simply gave up waiting after the stale window.
     runs.markStaleBefore(t - staleAfterMs, t);
     runs.pruneBefore(t - retentionMs);
     for (const id of before) {

@@ -246,6 +246,27 @@ describe('useChatSession — sending', () => {
     expect(error.fatal).toBe(false);              // the composer must stay usable
   });
 
+  // The resume button is nothing but a send, so "the button can never stick" is really "the busy
+  // flag is always cleared". A send that fails must leave the session offering the same resume again.
+  it('is free again after a send that failed, with the rate-limit stop still on record', async () => {
+    const { captured, Probe } = harness({
+      posts: { '/api/chat': async () => ({ ok: false, status: 500, payload: { error: 'boom' } }) },
+    });
+    render(<Probe />);
+    await waitFor(() => expect(session(captured).selected).toBe(PROJECT));
+    await act(async () => {
+      session(captured).handleEvent('chat.status', {
+        projectPath: PROJECT, state: 'closed', stopReason: 'rate_limit', resetsAt: 1_800_000_000_000, rateLimitType: 'five_hour',
+      });
+    });
+
+    await act(async () => { await session(captured).send('Continue where you left off.'); });
+
+    expect(session(captured).busy).toBe(false);
+    expect(session(captured).chat.stopReason).toBe('rate_limit');
+    expect(session(captured).chat.items.at(-1).message).toMatch(/could not be sent/);
+  });
+
   it('reports a failed interrupt without pretending the turn stopped', async () => {
     const { captured, Probe } = harness({
       posts: { '/api/chat/interrupt': async () => ({ ok: false, status: 400, payload: { error: 'bad_project' } }) },

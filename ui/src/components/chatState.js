@@ -55,10 +55,52 @@ export const initialChatState = {
   taskActivity: {},   // dispatch toolUseId -> what that subagent is doing right now
   taskKeys: {},       // taskId -> dispatch toolUseId, so tool_progress can be attributed
   completed: [],      // message ids already finalised, so a late delta cannot resurrect them
+  stopReason: null,   // why the session stopped: 'rate_limit', 'session_ended', or null
+  resetsAt: null,     // when the limit that stopped it lifts, as the daemon reported it
+  rateLimitType: null,
+  resume: null,       // 'scheduled' or 'resuming' while the daemon's one automatic attempt is alive
   seq: 0,
 };
 
 export const isBusy = (state) => BUSY_STATES.has(state.status);
+
+// A session that is speaking again did not die: whatever stopped it last time is history, and so is
+// any automatic attempt armed for it. Cleared on every state that only a live session can report,
+// which is what makes the rate-limit banner disappear the moment the conversation comes back rather
+// than when someone reloads the page.
+const ALIVE = { stopReason: null, resetsAt: null, rateLimitType: null, resume: null };
+
+// Statuses that describe a session which is up. Belt and braces next to ALIVE above: a `closed` that
+// arrives out of order after a `ready`, or a history load, must never put a "your session died"
+// banner over a conversation that is answering.
+const LIVE_STATES = new Set(['starting', 'ready', 'busy', 'idle', 'interrupted']);
+
+// The daemon settles the unit now — it normalises `resetsAt` to milliseconds the moment the SDK
+// reports it, because reading a seconds value as milliseconds puts the reset in the past and would
+// spend the one automatic resume immediately. This stays as a floor against an older daemon that
+// has not been restarted yet: anything below it is too small to be a millisecond timestamp of any
+// date this program will see, so it can only be seconds.
+const SECONDS_CEILING = 1e12;
+
+export function resetsAtMs(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  return value < SECONDS_CEILING ? value * 1000 : value;
+}
+
+/**
+ * What the composer has to say about a session that ran out of quota, or null when there is nothing
+ * to say. `resume` is 'scheduled' while the daemon's single automatic attempt is armed, 'resuming'
+ * while it is being sent, and null once it is spent — which is when the decision returns to the user.
+ */
+export function rateLimitStop(state) {
+  if (state.stopReason !== 'rate_limit') return null;
+  if (LIVE_STATES.has(state.status)) return null;
+  return {
+    resetsAt: resetsAtMs(state.resetsAt),
+    rateLimitType: state.rateLimitType ?? null,
+    resume: state.resume ?? null,
+  };
+}
 
 const MAX_COMPLETED = 100;
 
@@ -258,10 +300,11 @@ function applyStatus(state, payload) {
   const sessionId = payload.sessionId ?? state.sessionId;
   switch (payload.state) {
     case 'starting':
-      return { ...state, status: 'starting', sessionId: payload.sessionId ?? null };
+      return { ...state, ...ALIVE, status: 'starting', sessionId: payload.sessionId ?? null };
     case 'ready':
       return {
         ...state,
+        ...ALIVE,
         // `ready` describes the session, not the turn, and it arrives *after* `busy` on a cold
         // start. Letting it overwrite `busy` would re-enable the composer in the middle of a turn.
         status: state.status === 'busy' ? 'busy' : 'ready',
@@ -272,11 +315,31 @@ function applyStatus(state, payload) {
         permissionMode: payload.permissionMode ?? null,
       };
     case 'busy':
-      return { ...state, status: 'busy', sessionId };
+      return { ...state, ...ALIVE, status: 'busy', sessionId };
     case 'idle':
     case 'interrupted':
+      return { ...state, ...ALIVE, status: payload.state, sessionId, activity: null, streams: {} };
     case 'closed':
-      return { ...state, status: payload.state, sessionId, activity: null, streams: {} };
+      // The only status that carries why the session went away. Recorded rather than merely
+      // rendered as it passes, because the composer has to keep saying so long afterwards.
+      return {
+        ...state,
+        status: 'closed',
+        sessionId,
+        activity: null,
+        streams: {},
+        stopReason: payload.stopReason ?? null,
+        resetsAt: payload.resetsAt ?? null,
+        rateLimitType: payload.rateLimitType ?? null,
+      };
+    case 'resume_scheduled':
+      // The daemon armed its one automatic attempt. `resetsAt` repeats what `closed` already said,
+      // but a tab that opened after the death has only this.
+      return { ...state, resume: 'scheduled', resetsAt: payload.resetsAt ?? state.resetsAt };
+    case 'resume_cancelled':
+      return { ...state, resume: null };
+    case 'resuming':
+      return { ...state, resume: 'resuming' };
     case 'reset':
       // A reset discards the conversation on the daemon side — the transcript and the resume id go
       // together, so leaving the messages up would show a history the next session cannot remember.
@@ -325,7 +388,20 @@ export function applyChatEvent(state, name, payload) {
     }
     case 'chat.error':
       return appendItem(
-        { ...state, status: payload.fatal ? 'error' : state.status, streams: payload.fatal ? {} : state.streams },
+        {
+          ...state,
+          status: payload.fatal ? 'error' : state.status,
+          streams: payload.fatal ? {} : state.streams,
+          // A session killed by the rate limit reports it here as well as on `closed`, and either
+          // one can be the first thing a tab sees.
+          ...(payload.stopReason
+            ? { stopReason: payload.stopReason, resetsAt: payload.resetsAt ?? null, rateLimitType: payload.rateLimitType ?? null }
+            : {}),
+          // An error while the automatic attempt was in flight is that attempt failing. Leaving the
+          // state at 'resuming' would leave the banner promising a send that is not happening, with
+          // no way for the user to take over.
+          resume: state.resume === 'resuming' ? null : state.resume,
+        },
         { kind: 'error', message: payload.message ?? 'Something went wrong.', detail: payload.detail ?? null, fatal: payload.fatal === true, ts: payload.ts ?? null },
       );
     case 'chat.status':
@@ -380,5 +456,19 @@ export function fromHistory(history) {
 
   // `running` says a session is alive, not that a turn is in flight — the composer stays usable, and
   // a message sent into a live session is queued behind whatever it is doing.
-  return { ...state, status: history?.running ? 'ready' : 'unknown' };
+  if (history?.running) return { ...state, status: 'ready' };
+
+  // A tab opened long after the session died witnessed none of the events that said why, so the
+  // history request carries the same three facts. `rateLimit` is the SDK's last rate-limit report
+  // for the project and is the only place the limit's own type is named.
+  return {
+    ...state,
+    status: 'unknown',
+    stopReason: history?.stopReason ?? null,
+    resetsAt: history?.resetsAt ?? history?.rateLimit?.resetsAt ?? null,
+    // Restored, not inferred: a reloaded tab has to know the daemon's one automatic attempt is
+    // still coming, or it offers a Resume that would race it.
+    resume: history?.resumeArmed ? 'scheduled' : null,
+    rateLimitType: history?.rateLimit?.rateLimitType ?? null,
+  };
 }

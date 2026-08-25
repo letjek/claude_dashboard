@@ -390,3 +390,100 @@ describe('Chat page', () => {
     expect(dismiss).toHaveBeenCalled();
   });
 });
+
+// The session the user was talking to can die because the account ran out of quota, and until this
+// banner existed the page said nothing at all: an idle composer, and every message typed into it
+// starting a session that died again on the way out.
+describe('Chat rate-limit banner', () => {
+  const RESETS_AT = Date.UTC(2026, 7, 25, 12, 0, 0);
+  const READABLE = new Date(RESETS_AT).toLocaleTimeString();
+
+  const session = (over = {}) => ({
+    chat: initialChatState, selected: '/p', busy: false, historyError: null,
+    permissionNotice: null, dismissPermissionNotice: vi.fn(),
+    send: vi.fn(), interrupt: vi.fn(), reset: vi.fn(), ...over,
+  });
+
+  const died = (over = {}) => applyChatEvent(initialChatState, 'chat.status', {
+    state: 'closed', sessionId: 's1', stopReason: 'rate_limit', resetsAt: RESETS_AT, rateLimitType: 'five_hour', ...over,
+  });
+
+  const banner = () => screen.queryAllByRole('status').map((n) => n.textContent).find((t) => /rate limit ran out/.test(t));
+
+  it('says the limit ran out, which one, and when it lifts, in local time', () => {
+    render(<Chat session={session({ chat: died() })} runs={[]} now={RESETS_AT - 600_000} />);
+    expect(banner()).toMatch(/five-hour limit/);
+    expect(banner()).toMatch(new RegExp(READABLE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  });
+
+  it('prints an unfamiliar limit type as it arrived rather than swallowing it', () => {
+    render(<Chat session={session({ chat: died({ rateLimitType: 'some_new_window' }) })} runs={[]} now={RESETS_AT - 1000} />);
+    expect(banner()).toMatch(/some_new_window/);
+  });
+
+  it('says so plainly when nothing was reported about the reset', () => {
+    render(<Chat session={session({ chat: died({ resetsAt: null }) })} runs={[]} now={0} />);
+    expect(banner()).toMatch(/Nothing was reported about when it lifts/);
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeTruthy();
+  });
+
+  it('disappears entirely once the session is alive again', () => {
+    const back = applyChatEvent(died(), 'chat.status', { state: 'ready', sessionId: 's2' });
+    render(<Chat session={session({ chat: back })} runs={[]} now={RESETS_AT} />);
+    expect(banner()).toBeUndefined();
+  });
+
+  it('counts down to the reset while the one automatic attempt is armed, and offers no button yet', () => {
+    const armed = applyChatEvent(died(), 'chat.status', { state: 'resume_scheduled', resetsAt: RESETS_AT });
+    render(<Chat session={session({ chat: armed })} runs={[]} now={RESETS_AT - 134_000} />);
+    expect(banner()).toMatch(/One automatic attempt is armed/);
+    expect(screen.getByText('2m14s')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Resume/ })).toBeNull();
+  });
+
+  it('hands the decision back once that countdown has passed', () => {
+    const armed = applyChatEvent(died(), 'chat.status', { state: 'resume_scheduled', resetsAt: RESETS_AT });
+    render(<Chat session={session({ chat: armed })} runs={[]} now={RESETS_AT + 1000} />);
+    expect(banner()).toMatch(/continuing is your call/);
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeTruthy();
+  });
+
+  it('resumes by sending an ordinary message, because that is all a resume is', () => {
+    const send = vi.fn();
+    render(<Chat session={session({ chat: died(), send })} runs={[]} now={RESETS_AT + 1000} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][0]).toMatch(/Continue where you left off/);
+  });
+
+  it('keeps the button offered while the daemon sends its own attempt, so nothing can hang on it', () => {
+    const resuming = applyChatEvent(died(), 'chat.status', { state: 'resuming' });
+    render(<Chat session={session({ chat: resuming })} runs={[]} now={RESETS_AT + 1000} />);
+    expect(banner()).toMatch(/being sent now/);
+    expect(screen.getByRole('button', { name: 'Resume' }).disabled).toBe(false);
+  });
+
+  it('disables the button only while a send of its own is in flight', () => {
+    render(<Chat session={session({ chat: died(), busy: true })} runs={[]} now={RESETS_AT + 1000} />);
+    const button = screen.getByRole('button', { name: /Resuming/ });
+    expect(button.disabled).toBe(true);
+  });
+
+  // The specific thing that must never happen: a resume that fails leaving a dead "resuming…" label
+  // and no way to try again. The banner owns no busy flag of its own, so a failed send cannot strand it.
+  it('leaves the button usable when the resume did not go through', async () => {
+    const send = vi.fn(async () => { throw new Error('request_failed_500'); });
+    const chat = died();
+    const { rerender } = render(<Chat session={session({ chat, send })} runs={[]} now={RESETS_AT + 1000} />);
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Resume' })); });
+    // The session reports the failure in the transcript and clears its own busy flag; the banner is
+    // still here, offering the same button.
+    rerender(<Chat session={session({ chat, send, busy: false })} runs={[]} now={RESETS_AT + 2000} />);
+
+    const button = screen.getByRole('button', { name: 'Resume' });
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+});

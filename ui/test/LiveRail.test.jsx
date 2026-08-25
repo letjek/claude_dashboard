@@ -1,13 +1,22 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import { LiveRail } from '../src/components/LiveRail.jsx';
 import { formatElapsed } from '../src/components/RunRow.jsx';
-import { upsertRun, mergeSnapshot, visibleRuns, finishedIds } from '../src/components/runList.js';
+import { upsertRun, mergeSnapshot, visibleRuns, finishedIds, dropRuns } from '../src/components/runList.js';
 
 const run = (over = {}) => ({
   id: 's1:t1', sessionId: 's1', agentType: 'programmer', description: 'add auth',
   status: 'running', startedAt: 1000, endedAt: null, durationMs: null, projectPath: '/proj', ...over,
 });
+
+// Clearing used to live only in this component's own useState, so `GET /api/runs` served the same
+// rows again on the next load and three cleared rows came back. The press has to reach the daemon.
+const dismissOk = (dismissed = null) => vi.fn(async (_path, options) => {
+  const ids = JSON.parse(options.body).ids;
+  return { ok: true, status: 200, json: async () => ({ dismissed: dismissed ?? ids }) };
+});
+
+const dismissFails = () => vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: 'boom' }) }));
 
 describe('formatElapsed', () => {
   it('formats each magnitude', () => {
@@ -233,6 +242,8 @@ describe('finishedIds', () => {
 describe('LiveRail scoping', () => {
   const props = { now: 2000, taskActivity: {} };
 
+  afterEach(() => { vi.unstubAllGlobals(); });
+
   it('shows only the selected project\'s agents', () => {
     render(<LiveRail {...props} projectPath="/proj" runs={[run({ id: 'a', description: 'mine' }), run({ id: 'b', description: 'theirs', projectPath: '/other' })]} />);
     expect(screen.getByText('mine')).toBeTruthy();
@@ -244,12 +255,13 @@ describe('LiveRail scoping', () => {
     expect(screen.getByText(/in this project/)).toBeTruthy();
   });
 
-  it('clears finished rows on request and leaves running ones alone', () => {
+  it('clears finished rows on request and leaves running ones alone', async () => {
+    vi.stubGlobal('fetch', dismissOk());
     render(<LiveRail {...props} projectPath="/proj" runs={[
       run({ id: 'a', description: 'still working' }),
       run({ id: 'b', description: 'all done', status: 'done', durationMs: 1000 }),
     ]} />);
-    fireEvent.click(screen.getByRole('button', { name: /clear finished/i }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /clear finished/i })); });
     expect(screen.getByText('still working')).toBeTruthy();
     expect(screen.queryByText('all done')).toBe(null);
   });
@@ -257,5 +269,104 @@ describe('LiveRail scoping', () => {
   it('offers nothing to clear when every row is running', () => {
     render(<LiveRail {...props} projectPath="/proj" runs={[run()]} />);
     expect(screen.queryByRole('button', { name: /clear finished/i })).toBe(null);
+  });
+});
+
+
+describe('LiveRail clearing is durable', () => {
+  const props = { now: 2000, taskActivity: {}, projectPath: '/proj' };
+  const rows = [
+    run({ id: 'a', description: 'still working' }),
+    run({ id: 'b', description: 'all done', status: 'done', durationMs: 1000 }),
+    run({ id: 'c', description: 'gave up on it', status: 'stale', durationMs: 1_800_000 }),
+  ];
+
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('tells the daemon exactly which rows were cleared, and never a running one', async () => {
+    const fetchMock = dismissOk();
+    vi.stubGlobal('fetch', fetchMock);
+    render(<LiveRail {...props} runs={rows} />);
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /clear finished/i })); });
+
+    const [path, options] = fetchMock.mock.calls[0];
+    expect(path).toBe('/api/runs/dismiss');
+    expect(options.method).toBe('POST');
+    expect(JSON.parse(options.body)).toEqual({ ids: ['b', 'c'] });
+  });
+
+  it('hides the rows immediately rather than waiting for the round trip', async () => {
+    let release = () => {};
+    vi.stubGlobal('fetch', vi.fn(() => new Promise((resolve) => {
+      release = () => resolve({ ok: true, status: 200, json: async () => ({ dismissed: ['b', 'c'] }) });
+    })));
+    render(<LiveRail {...props} runs={rows} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /clear finished/i }));
+    expect(screen.queryByText('all done')).toBe(null);
+    expect(screen.getByText('still working')).toBeTruthy();
+
+    await act(async () => { release(); });
+  });
+
+  it('puts the rows back and says so when the dismissal did not go through', async () => {
+    vi.stubGlobal('fetch', dismissFails());
+    render(<LiveRail {...props} runs={rows} />);
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /clear finished/i })); });
+
+    // Pretending they went would be a lie the next reload exposes.
+    await waitFor(() => expect(screen.getByText('all done')).toBeTruthy());
+    expect(screen.getByText('gave up on it')).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toMatch(/could not be cleared \(boom\)/);
+    expect(screen.getByRole('button', { name: /clear finished/i }).disabled).toBe(false);
+  });
+});
+
+describe('dropRuns', () => {
+  it('removes exactly the ids the daemon reported dismissed', () => {
+    const rows = [run({ id: 'a' }), run({ id: 'b' }), run({ id: 'c' })];
+    expect(dropRuns(rows, ['b', 'c']).map((r) => r.id)).toEqual(['a']);
+  });
+
+  it('returns the same array when nothing was named, so no render is triggered for nothing', () => {
+    const rows = [run({ id: 'a' })];
+    expect(dropRuns(rows, [])).toBe(rows);
+    expect(dropRuns(rows, undefined)).toBe(rows);
+    expect(dropRuns(rows, ['nobody'])).toBe(rows);
+  });
+});
+
+// A stale badge says the dashboard stopped waiting. It does not say why nobody ever reported, and
+// three rate-limited subagents sat there for half an hour looking like they might still be working.
+describe('RunRow stop reasons', () => {
+  const props = { now: 2000, taskActivity: {}, projectPath: '/proj' };
+  const dead = (stopReason) => run({ status: 'stale', durationMs: 1_800_000, stopReason });
+
+  it('names a rate limit as what killed the agent', () => {
+    render(<LiveRail {...props} runs={[dead('rate_limit')]} />);
+    expect(screen.getByText(/ran out of rate limit quota/)).toBeTruthy();
+    expect(screen.getByText('stale')).toBeTruthy();       // the status badge is not replaced by it
+  });
+
+  it('says the dispatching session went away, which is not the same accident', () => {
+    render(<LiveRail {...props} runs={[dead('session_ended')]} />);
+    expect(screen.getByText(/session that dispatched it went away/)).toBeTruthy();
+  });
+
+  it('says a swept run was waited for and never reported', () => {
+    render(<LiveRail {...props} runs={[dead('swept')]} />);
+    expect(screen.getByText(/stopped waiting after 30 minutes/)).toBeTruthy();
+  });
+
+  it('says nothing extra for a run that closed normally', () => {
+    const { container } = render(<LiveRail {...props} runs={[run({ status: 'done', durationMs: 1000, stopReason: null })]} />);
+    expect(container.querySelector('.stopped')).toBe(null);
+  });
+
+  it('never claims a running row has already stopped', () => {
+    const { container } = render(<LiveRail {...props} runs={[run({ stopReason: 'rate_limit' })]} />);
+    expect(container.querySelector('.stopped')).toBe(null);
   });
 });

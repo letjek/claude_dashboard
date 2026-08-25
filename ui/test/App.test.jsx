@@ -168,6 +168,22 @@ describe('App event routing', () => {
     expect(dialog.textContent).not.toMatch(/Always allow/);
   });
 
+  // The event carries `ids`, not `id`. Routed by payload shape it is dropped on the floor, and the
+  // tab that did not press the button keeps showing rows the daemon has already put away.
+  it('hides rows another tab cleared', async () => {
+    vi.stubGlobal('fetch', respond({
+      runs: { active: [RUN], recent: [{ ...RUN, id: 's1:t2', agentType: 'qa', status: 'stale', durationMs: 1_800_000, stopReason: 'rate_limit' }] },
+    }));
+    render(<App />);
+    await screen.findByText('qa');
+
+    await act(async () => { FakeEventSource.instances[0].emit('run.dismiss', { ids: ['s1:t2'] }); });
+
+    await waitFor(() => expect(screen.queryByText('qa')).toBeNull());
+    // Only the rows it named: the running one was never dismissible in the first place.
+    expect(screen.getByText('programmer')).toBeTruthy();
+  });
+
   it('removes the prompt when the daemon reports it settled by anything at all', async () => {
     vi.stubGlobal('fetch', respond());
     render(<App />);

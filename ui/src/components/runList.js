@@ -66,6 +66,18 @@ export function visibleRuns(runs, { projectPath = null, dismissed = null } = {})
   });
 }
 
+/**
+ * Drop rows the daemon says were dismissed. Dismissal is durable now — `GET /api/runs` no longer
+ * returns those rows at all — so they leave the list outright rather than being hidden by the rail,
+ * which is also what keeps the Activity page agreeing with what a reload would show.
+ */
+export function dropRuns(runs, ids) {
+  const gone = new Set(Array.isArray(ids) ? ids : []);
+  if (gone.size === 0) return runs;
+  const kept = runs.filter((run) => !gone.has(run.id));
+  return kept.length === runs.length ? runs : kept;
+}
+
 /** The ids of every row that has stopped — what "clear finished" removes, and nothing else. */
 export function finishedIds(runs) {
   return runs.filter((run) => run.status !== 'running').map((run) => run.id);

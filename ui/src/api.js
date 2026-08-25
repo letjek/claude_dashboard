@@ -1,7 +1,15 @@
+// Reads report the daemon's own error code the same way writes do. The directory picker is what
+// forced this: a 403 from `/api/fs/list` carries the home directory it confined the request to, and
+// a 400 says whether the path was a file or was not absolute — all of it thrown away when this only
+// ever raised `request_failed_<status>`.
 export async function fetchJson(path) {
   const res = await fetch(path, { headers: { accept: 'application/json' } });
-  if (res.status === 401) throw new Error('unauthorized');
-  if (!res.ok) throw new Error(`request_failed_${res.status}`);
+  if (res.status === 401) throw Object.assign(new Error('unauthorized'), { status: 401 });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch { /* an error response may carry no body at all */ }
+    throw Object.assign(new Error(payload?.error ?? `request_failed_${res.status}`), { status: res.status, body: payload });
+  }
   return res.json();
 }
 
@@ -30,6 +38,9 @@ const EVENTS = [
   // event without adding it here is invisible rather than noisy.
   'chat.delta', 'chat.message', 'chat.tool_use', 'chat.result', 'chat.error', 'chat.status',
   'permission.request', 'permission.resolved',
+  // Clearing a finished run is durable now, so a second tab has to hear about it or it keeps
+  // showing rows this one has already dismissed.
+  'run.dismiss',
 ];
 
 export function connectStream({ onEvent, onError, onOpen }) {

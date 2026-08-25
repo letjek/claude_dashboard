@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, statSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb } from '../../src/store/db.js';
@@ -265,4 +266,131 @@ test('a finished run is still immune to a later close', () => {
   runs.close({ id: 'done-once', status: 'done', endedAt: 2000, resultPreview: 'ok' });
   assert.equal(runs.close({ id: 'done-once', status: 'error', endedAt: 9000, resultPreview: 'no' }), false);
   assert.equal(runs.get('done-once').resultPreview, 'ok');
+});
+
+// A run that stops without ever reporting for itself — the Claude process died with its rate limit
+// exhausted — used to be indistinguishable from one still working, right up until the sweeper staled
+// it half an hour later. The reason is recorded beside the status, never as a fourth status value.
+test('a swept run records why it was staled', () => {
+  const runs = createRunsRepo(fresh());
+  runs.open({ ...baseRun, id: 'abandoned', startedAt: 1000 });
+  runs.markStaleBefore(5000, 20_000);
+  const row = runs.get('abandoned');
+  assert.equal(row.status, 'stale');
+  assert.equal(row.stopReason, 'swept');
+});
+
+test('endSessionRuns stores the reason the caller knows for the ending', () => {
+  const runs = createRunsRepo(fresh());
+  runs.open({ ...baseRun, id: 'clean', sessionId: 's1' });
+  runs.open({ ...baseRun, id: 'starved', sessionId: 's2' });
+  runs.endSessionRuns('s1', 7000);
+  runs.endSessionRuns('s2', 7000, 'rate_limit');
+  assert.equal(runs.get('clean').stopReason, 'session_ended');
+  assert.equal(runs.get('starved').stopReason, 'rate_limit');
+});
+
+// The sweeper knows only that nobody reported. Whoever staled the run first knew exactly why, and
+// that is the reason the rail should keep showing.
+test('a later sweep does not overwrite a reason already recorded', () => {
+  const runs = createRunsRepo(fresh());
+  runs.open({ ...baseRun, id: 'starved', sessionId: 's2', startedAt: 1000 });
+  runs.endSessionRuns('s2', 3000, 'rate_limit');
+  runs.markStaleBefore(5000, 20_000);
+  assert.equal(runs.get('starved').stopReason, 'rate_limit');
+});
+
+test('a run that finishes for real has no stop reason left on it', () => {
+  const runs = createRunsRepo(fresh());
+  runs.open({ ...baseRun, id: 'long', startedAt: 0 });
+  runs.markStaleBefore(1000, 1_860_000);
+  assert.equal(runs.get('long').stopReason, 'swept');
+  assert.equal(runs.close({ id: 'long', status: 'done', endedAt: 1_861_000, resultPreview: 'shipped' }), true);
+  assert.equal(runs.get('long').stopReason, null, 'a completed run was never abandoned');
+});
+
+test('a dismissed run is gone from listRecent, which is what a reload reads', () => {
+  const runs = createRunsRepo(fresh());
+  runs.open({ ...baseRun, id: 'cleared' });
+  runs.open({ ...baseRun, id: 'kept', startedAt: 2000 });
+  runs.close({ id: 'cleared', status: 'done', endedAt: 2000 });
+  runs.close({ id: 'kept', status: 'done', endedAt: 3000 });
+  assert.deepEqual(runs.dismiss(['cleared'], 9000), ['cleared']);
+  assert.deepEqual(runs.listRecent().map((r) => r.id), ['kept']);
+  assert.equal(runs.get('cleared').dismissedAt, 9000, 'the row is still there, only hidden');
+});
+
+// The whole point of the status guard: no request, however it is shaped, may hide an agent that is
+// genuinely still working. A rail that can be made to drop a live run is worse than one row too many.
+test('dismissing a running run is refused', () => {
+  const runs = createRunsRepo(fresh());
+  runs.open({ ...baseRun, id: 'working' });
+  assert.deepEqual(runs.dismiss(['working'], 9000), []);
+  assert.equal(runs.get('working').dismissedAt, null);
+  assert.deepEqual(runs.listRecent().map((r) => r.id), ['working']);
+});
+
+test('a stale run can be dismissed — it is not running, it was abandoned', () => {
+  const runs = createRunsRepo(fresh());
+  runs.open({ ...baseRun, id: 'abandoned', startedAt: 1000 });
+  runs.markStaleBefore(5000, 20_000);
+  assert.deepEqual(runs.dismiss(['abandoned'], 9000), ['abandoned']);
+  assert.deepEqual(runs.listRecent(), []);
+});
+
+test('dismiss reports only the ids it actually dismissed', () => {
+  const runs = createRunsRepo(fresh());
+  runs.open({ ...baseRun, id: 'done-one' });
+  runs.close({ id: 'done-one', status: 'done', endedAt: 2000 });
+  assert.deepEqual(runs.dismiss(['ghost'], 9000), [], 'an unknown id is reported, not thrown');
+  assert.deepEqual(runs.dismiss(['done-one', 'ghost'], 9000), ['done-one']);
+  assert.deepEqual(runs.dismiss(['done-one'], 9500), [], 'a repeat changes nothing to broadcast');
+  assert.equal(runs.get('done-one').dismissedAt, 9000, 'the first dismissal time stands');
+});
+
+test('dismiss survives a caller that passes something other than a list of ids', () => {
+  const runs = createRunsRepo(fresh());
+  runs.open({ ...baseRun, id: 'done-one' });
+  runs.close({ id: 'done-one', status: 'done', endedAt: 2000 });
+  assert.deepEqual(runs.dismiss(undefined, 9000), []);
+  assert.deepEqual(runs.dismiss([{}, 7, null, 'done-one'], 9000), ['done-one']);
+});
+
+// listActive carries no dismissal filter because nothing can put a dismissed row back into
+// `running`: open() is INSERT OR IGNORE, so a replayed dispatch of the same id leaves the finished,
+// dismissed row exactly as it is rather than reviving it into the rail.
+test('a dismissed run cannot come back through listActive', () => {
+  const runs = createRunsRepo(fresh());
+  runs.open({ ...baseRun, id: 'cleared' });
+  runs.close({ id: 'cleared', status: 'done', endedAt: 2000 });
+  runs.dismiss(['cleared'], 9000);
+  runs.open({ ...baseRun, id: 'cleared', startedAt: 12_000 });
+  assert.deepEqual(runs.listActive(), []);
+  assert.equal(runs.get('cleared').status, 'done');
+  assert.deepEqual(runs.listRecent(), []);
+});
+
+// The columns arrived after the first release, and `CREATE TABLE IF NOT EXISTS` does nothing to a
+// table that already exists. A database written by the old schema has to gain them on open, with its
+// rows intact — the alternative is a daemon that throws on every read the moment it is upgraded.
+test('opening a database written by the old schema adds the new columns', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'ap-mig-')), 'data.db');
+  const old = new DatabaseSync(path);
+  old.exec(`CREATE TABLE runs (
+    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, agent_type TEXT, description TEXT, prompt TEXT,
+    status TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER, duration_ms INTEGER,
+    result_preview TEXT, transcript_path TEXT)`);
+  old.exec("INSERT INTO runs (id, session_id, agent_type, status, started_at) VALUES ('legacy', 's1', 'qa', 'done', 100)");
+  old.close();
+
+  const db = openDb(path);
+  const columns = db.prepare('PRAGMA table_info(runs)').all().map((c) => c.name);
+  assert.ok(columns.includes('stop_reason'));
+  assert.ok(columns.includes('dismissed_at'));
+
+  const runs = createRunsRepo(db);
+  const row = runs.get('legacy');
+  assert.equal(row.stopReason, null);
+  assert.equal(row.dismissedAt, null);
+  assert.deepEqual(runs.listRecent().map((r) => r.id), ['legacy'], 'a pre-existing row is visible, not hidden');
 });

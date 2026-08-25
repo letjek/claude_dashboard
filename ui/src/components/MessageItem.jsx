@@ -11,7 +11,7 @@ const clock = (ts) => {
 };
 
 const WARNING_TEXT = {
-  rate_limit_event: (d) => `Rate limit ${d?.status ?? 'update'}${d?.resetsAt ? ` — resets ${new Date(d.resetsAt * 1000).toLocaleTimeString()}` : ''}.`,
+  rate_limit_event: (d) => `Rate limit ${d?.status ?? 'update'}${d?.resetsAt ? ` — resets ${new Date(d.resetsAt).toLocaleTimeString()}` : ''}.`,
   auth_status: (d) => (d?.error ? `Authentication problem: ${d.error}` : 'Re-authenticating with Anthropic.'),
   permission_denied: (d) => `${d?.toolName ?? 'A tool'} was denied by Claude Code's own permission rules, before this dashboard was asked.`,
   model_refusal_fallback: (d) => `${d?.originalModel ?? 'The model'} refused; continuing on ${d?.fallbackModel ?? 'a fallback model'}.`,

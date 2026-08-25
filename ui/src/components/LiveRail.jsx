@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { postJson } from '../api.js';
 import { RunRow } from './RunRow.jsx';
 import { finishedIds, runToolUseId, visibleRuns } from './runList.js';
 
@@ -8,13 +9,41 @@ export function LiveRail({ runs, now, taskActivity = {}, projectPath = null }) {
   // One row open at a time, and kept here rather than in App: which row a user has expanded is a
   // property of this panel, and lifting it would re-render the whole shell on every click.
   const [openId, setOpenId] = useState(null);
-  // Cleared rows are hidden here and nowhere else: the run is still in the database and still in the
-  // Activity page, because "I have read this" is a property of this panel and not of the run.
+  // Only the optimistic half of clearing. The durable half is the daemon's — `POST /api/runs/dismiss`
+  // takes the rows out of `GET /api/runs`, and the `run.dismiss` broadcast takes them out of App's
+  // list in every open tab. This set is what makes the press feel instant, and what is undone again
+  // when the request turns out to have failed: hiding a row this side alone is what let three
+  // cleared rows come back on the next reload.
   const [dismissed, setDismissed] = useState(() => new Set());
+  const [clearing, setClearing] = useState(false);
+  const [clearError, setClearError] = useState(null);
 
   const scoped = visibleRuns(runs, { projectPath, dismissed });
   const ordered = [...scoped].sort((a, b) => rank(a) - rank(b) || b.startedAt - a.startedAt);
   const finished = finishedIds(ordered);
+
+  async function clearFinished() {
+    const ids = finished;
+    if (ids.length === 0) return;
+    setDismissed((prev) => new Set([...prev, ...ids]));
+    setClearing(true);
+    setClearError(null);
+    try {
+      await postJson('/api/runs/dismiss', { ids });
+    } catch (err) {
+      // The rows come back rather than staying hidden on a promise the daemon never kept: a reload
+      // would return them anyway, and a panel that quietly disagrees with the next page load is the
+      // bug this whole change exists to fix.
+      setDismissed((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
+      setClearError(err?.message ?? String(err));
+    } finally {
+      setClearing(false);
+    }
+  }
 
   return (
     // aria-live: the whole point of this panel is that it changes while the user watches it.
@@ -30,12 +59,19 @@ export function LiveRail({ runs, now, taskActivity = {}, projectPath = null }) {
           <button
             type="button"
             className="btn subtle rail-clear"
-            onClick={() => setDismissed((prev) => new Set([...prev, ...finished]))}
+            disabled={clearing}
+            onClick={clearFinished}
           >
-            Clear finished
+            {clearing ? 'Clearing…' : 'Clear finished'}
           </button>
         )}
       </div>
+      {clearError && (
+        <p className="notice" role="status">
+          Those rows could not be cleared ({clearError}) — they are still here, and still in the
+          daemon. Try again when the connection is back.
+        </p>
+      )}
       {ordered.length === 0
         ? (
           <p className="empty">

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { DirectoryPicker } from './DirectoryPicker.jsx';
 
 // What the daemon reports, turned into a sentence and — where there is one — an offer. A rejected
 // path used to end at "that is not a directory on this machine", which is true and useless: the two
@@ -38,6 +39,7 @@ export function ProjectSwitcher({ projects, selected, onSelect, onAdd, error }) 
   const [path, setPath] = useState('');
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState(null);
+  const [browsing, setBrowsing] = useState(false);
 
   async function attempt(value, create) {
     if (value === '' || pending) return;
@@ -86,6 +88,17 @@ export function ProjectSwitcher({ projects, selected, onSelect, onAdd, error }) 
               autoComplete="off"
               spellCheck="false"
             />
+            {/* The picker only fills the field in. Adding a project stays one deliberate press of Add,
+                which keeps every rejection — a path that is a file, a folder that does not exist yet —
+                on the single path through attempt() that already knows how to explain them. */}
+            {browsing
+              ? (
+                <DirectoryPicker
+                  onPick={(picked) => { setPath(picked); setFailure(null); setBrowsing(false); }}
+                  onClose={() => setBrowsing(false)}
+                />
+              )
+              : <button type="button" className="btn subtle" onClick={() => setBrowsing(true)}>Browse…</button>}
             {failure && (
               <div className="notice" role="alert">
                 <p>{failure.text}</p>
@@ -107,7 +120,7 @@ export function ProjectSwitcher({ projects, selected, onSelect, onAdd, error }) 
               <button type="submit" className="btn primary" disabled={pending || path.trim() === ''}>
                 {pending ? 'Adding…' : 'Add'}
               </button>
-              <button type="button" className="btn" onClick={() => { setAdding(false); setFailure(null); }}>Cancel</button>
+              <button type="button" className="btn" onClick={() => { setAdding(false); setFailure(null); setBrowsing(false); }}>Cancel</button>
             </div>
           </form>
         )

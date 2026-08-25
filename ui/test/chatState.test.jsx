@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyChatEvent, appendUserMessage, fromHistory, initialChatState,
-  isBusy, isDispatch, streamingBuffers, SURFACED_WARNINGS,
+  isBusy, isDispatch, rateLimitStop, resetsAtMs, streamingBuffers, SURFACED_WARNINGS,
 } from '../src/components/chatState.js';
 import { addRequest, removeRequest, restoreRequests, APPROVAL_WINDOW_MS } from '../src/components/permissionQueue.js';
 import { summarizeToolInput, formatToolInput, readStoredInput } from '../src/components/toolSummary.js';
@@ -528,5 +528,84 @@ describe('per-subagent activity', () => {
     expect(Object.keys(state.taskActivity).length).toBe(64);
     expect(state.taskActivity.toolu_79).toBeTruthy();
     expect(state.taskActivity.toolu_0).toBeUndefined();
+  });
+});
+
+// A session that dies on the rate limit reports why, and the page has to keep saying so long after
+// the event that carried it: the whole failure this replaces was a dashboard that looked idle while
+// the account was locked out.
+describe('rate-limited stop', () => {
+  const RESETS_AT = Date.UTC(2026, 7, 25, 12, 0, 0);
+  const closed = (over = {}) => ['chat.status', {
+    state: 'closed', sessionId: 's1', stopReason: 'rate_limit', resetsAt: RESETS_AT, rateLimitType: 'five_hour', ...over,
+  }];
+
+  it('remembers why a closed session closed', () => {
+    const state = apply(initialChatState, [closed()]);
+    expect(rateLimitStop(state)).toEqual({ resetsAt: RESETS_AT, rateLimitType: 'five_hour', resume: null });
+  });
+
+  it('says nothing about a session that closed for an ordinary reason', () => {
+    expect(rateLimitStop(apply(initialChatState, [closed({ stopReason: 'session_ended', resetsAt: null })]))).toBeNull();
+  });
+
+  it('reads the same fact off a fatal error, which can be the only frame a tab sees', () => {
+    const state = applyChatEvent(initialChatState, 'chat.error', {
+      message: 'The rate limit ran out and the session stopped.', fatal: true,
+      stopReason: 'rate_limit', resetsAt: RESETS_AT, rateLimitType: 'seven_day',
+    });
+    expect(rateLimitStop(state).rateLimitType).toBe('seven_day');
+  });
+
+  it('forgets it the moment the session speaks again', () => {
+    const back = apply(initialChatState, [closed(), ['chat.status', { state: 'starting', sessionId: 's2' }]]);
+    expect(rateLimitStop(back)).toBeNull();
+    expect(rateLimitStop(apply(initialChatState, [closed(), ['chat.status', { state: 'ready', sessionId: 's2' }]]))).toBeNull();
+    expect(rateLimitStop(apply(initialChatState, [closed(), ['chat.status', { state: 'busy' }]]))).toBeNull();
+  });
+
+  it('follows the daemon\'s one automatic attempt from armed to spent', () => {
+    let state = apply(initialChatState, [closed(), ['chat.status', { state: 'resume_scheduled', resetsAt: RESETS_AT }]]);
+    expect(rateLimitStop(state).resume).toBe('scheduled');
+
+    state = applyChatEvent(state, 'chat.status', { state: 'resuming' });
+    expect(rateLimitStop(state).resume).toBe('resuming');
+
+    // The attempt failed. Staying at 'resuming' would leave the banner promising a send that is not
+    // happening, with no button to take over with.
+    state = applyChatEvent(state, 'chat.error', { message: 'The automatic resume did not go through.', fatal: false });
+    expect(rateLimitStop(state).resume).toBeNull();
+  });
+
+  it('drops the countdown when the attempt is called off', () => {
+    const state = apply(initialChatState, [
+      closed(),
+      ['chat.status', { state: 'resume_scheduled', resetsAt: RESETS_AT }],
+      ['chat.status', { state: 'resume_cancelled', resetsAt: null }],
+    ]);
+    expect(rateLimitStop(state).resume).toBeNull();
+    expect(rateLimitStop(state).resetsAt).toBe(RESETS_AT);
+  });
+
+  it('learns it from history, for a tab opened long after the death', () => {
+    const state = fromHistory({
+      sessionId: 's1', running: false, messages: [],
+      stopReason: 'rate_limit', resetsAt: RESETS_AT, rateLimit: { status: 'rejected', rateLimitType: 'five_hour' },
+    });
+    expect(rateLimitStop(state)).toEqual({ resetsAt: RESETS_AT, rateLimitType: 'five_hour', resume: null });
+  });
+
+  it('never banners a session the history says is running', () => {
+    const state = fromHistory({ sessionId: 's1', running: true, messages: [], stopReason: 'rate_limit', resetsAt: RESETS_AT });
+    expect(rateLimitStop(state)).toBeNull();
+  });
+
+  it('takes a reset time in either unit rather than printing one from 1970', () => {
+    // The SDK documents no unit, the transcript's warning line reads it as seconds and the daemon's
+    // scheduler reads it as milliseconds. Both have to arrive at the same instant on screen.
+    expect(resetsAtMs(RESETS_AT)).toBe(RESETS_AT);
+    expect(resetsAtMs(Math.floor(RESETS_AT / 1000))).toBe(RESETS_AT);
+    expect(resetsAtMs(null)).toBeNull();
+    expect(resetsAtMs(0)).toBeNull();
   });
 });

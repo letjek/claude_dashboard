@@ -29,6 +29,19 @@ export function activitySummary(activity) {
   return null;
 }
 
+// Why nobody ever reported for a run. Three different accidents, and collapsing them into one
+// sentence would hide the only thing that tells the user what to do next: a rate limit is waited
+// out, a dead session is restarted, and a sweep means the result may have happened unrecorded.
+const STOP_REASON = {
+  rate_limit: 'stopped when the session ran out of rate limit quota',
+  session_ended: 'stopped when the session that dispatched it went away',
+  swept: 'never reported a result — we stopped waiting after 30 minutes',
+};
+
+export function stopReasonText(run) {
+  return STOP_REASON[run?.stopReason] ?? null;
+}
+
 const tokens = (usage) => {
   if (usage === null || typeof usage !== 'object') return null;
   const total = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)
@@ -40,6 +53,9 @@ export function RunRow({ run, now, activity, expanded = false, onToggle }) {
   const elapsed = run.status === 'running' ? now - run.startedAt : (run.durationMs ?? 0);
   const working = run.status === 'running';
   const doing = working ? activitySummary(activity) : null;
+  // Shown on the collapsed row, not only in the detail: a row that says nothing but STALE reads as
+  // "this might still be alive", which is exactly the reading three dead qa runs earned.
+  const stopped = working ? null : stopReasonText(run);
 
   return (
     <li className={`run ${run.status}${expanded ? ' expanded' : ''}`}>
@@ -68,6 +84,7 @@ export function RunRow({ run, now, activity, expanded = false, onToggle }) {
           ? <span className={`badge ${run.status}`}>{run.status}</span>
           : <span className="sr-only">{`status ${run.status}`}</span>}
         {doing && <span className="doing" title={doing}>{doing}</span>}
+        {stopped && <span className="stopped">{stopped}</span>}
       </button>
 
       {expanded && (
@@ -76,7 +93,9 @@ export function RunRow({ run, now, activity, expanded = false, onToggle }) {
             <dt>status</dt>
             <dd>
               {run.status}
-              {run.status === 'stale' && ' — no completion was ever reported for it'}
+              {/* Only when the daemon reported no reason of its own: with one, the row above already
+                  says it, and in more detail than this ever did. */}
+              {run.status === 'stale' && stopped === null && ' — no completion was ever reported for it'}
             </dd>
             <dt>{run.status === 'running' ? 'running for' : 'took'}</dt>
             <dd className="mono">{formatElapsed(elapsed)}</dd>

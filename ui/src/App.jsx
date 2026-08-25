@@ -10,7 +10,7 @@ import { Activity } from './pages/Activity.jsx';
 import { Chat } from './pages/Chat.jsx';
 import { useRoute } from './router.jsx';
 import { connectStream, fetchJson } from './api.js';
-import { upsertRun, mergeSnapshot } from './components/runList.js';
+import { upsertRun, mergeSnapshot, dropRuns } from './components/runList.js';
 import { useChatSession } from './useChatSession.js';
 import { questionPreamble } from './components/questionContext.js';
 
@@ -42,6 +42,12 @@ export function App() {
         // the live rail as if it were a subagent.
         if (name.startsWith('chat.') || name.startsWith('permission.')) {
           handleEvent(name, payload);
+          return;
+        }
+        // Carries `ids`, not `id`, so it has to be routed by name before the run branch below drops
+        // it for having no id — which is how a second tab kept showing rows this one had cleared.
+        if (name === 'run.dismiss') {
+          setRuns((prev) => dropRuns(prev, payload?.ids));
           return;
         }
         if (!payload?.id) return;
@@ -87,8 +93,13 @@ export function App() {
     fetchJson('/api/health').then((h) => setHooksInstalled(h?.hooksInstalled !== false)).catch(() => {});
   }, [reloadKey]);
 
-  const page = path === '/agents' ? <Agents agents={catalog.agents} catalogError={catalogError} />
-    : path === '/skills' ? <Skills skills={catalog.skills} catalogError={catalogError} />
+  // A create writes a file the daemon is already watching, so `catalog.changed` will arrive on its
+  // own — but bumping the key here means the new row is on screen the moment the POST returns rather
+  // than whenever the watcher notices.
+  const page = path === '/agents'
+    ? <Agents agents={catalog.agents} catalogError={catalogError} projectPath={session.selected} onCreated={() => setReloadKey((k) => k + 1)} />
+    : path === '/skills'
+    ? <Skills skills={catalog.skills} catalogError={catalogError} projectPath={session.selected} onCreated={() => setReloadKey((k) => k + 1)} />
     : path === '/activity' ? <Activity runs={runs.filter((r) => r.status !== 'running')} hooksInstalled={hooksInstalled} />
     : <Chat session={session} runs={runs} now={now} catalog={catalog} />;
 

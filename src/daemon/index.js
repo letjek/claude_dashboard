@@ -5,8 +5,9 @@ import { createServer } from './server.js';
 import { generateToken } from './auth.js';
 import { authRoute } from './routes/auth.js';
 import { staticRoute } from './routes/static.js';
-import { catalogRoute } from './routes/catalog.js';
-import { hooksRoute, runsRoute } from './routes/hooks.js';
+import { catalogRoute, catalogWriteRoutes } from './routes/catalog.js';
+import { fsRoutes } from './routes/fs.js';
+import { hooksRoute, runsRoute, runsDismissRoute } from './routes/hooks.js';
 import { chatRoutes } from './routes/chat.js';
 import { findAvailablePort } from '../core/port.js';
 import { writeRuntime, clearRuntime, acquireStartLock, restrictStatePaths } from '../core/runtime-file.js';
@@ -16,6 +17,7 @@ import { createSessionsRepo } from '../store/sessions.js';
 import { createChatRepo } from '../store/chat.js';
 import { createProjectsRepo } from '../store/projects.js';
 import { createSessionManager } from '../chat/session.js';
+import { createResumeScheduler } from '../chat/resume.js';
 import { createPermissionGate } from '../chat/permissions.js';
 import { createCatalog } from '../catalog/index.js';
 import { startSweeper } from '../core/sweeper.js';
@@ -82,7 +84,25 @@ export async function startDaemon({
     // The gate and the session manager are separate on purpose: the gate is the security boundary
     // and knows nothing about the SDK, and the manager cannot answer its own permission prompts.
     const permissions = createPermissionGate({ hub, now });
-    const chatSessions = createSessionManager({ store: chat, hub, now, permissions });
+    // Declared before the manager because the manager's end-of-session callback reaches for it, and
+    // the scheduler in turn needs the manager to send with. One of the two has to be filled in
+    // afterwards; a `let` is the whole of the trick.
+    let resumes = null;
+    const chatSessions = createSessionManager({
+      store: chat, hub, now, permissions,
+      // The CLI that would have fired SessionEnd is the process that just died, so nothing else
+      // closes the subagents it dispatched — they sat in the rail claiming to be alive until the
+      // 30-minute sweeper reached them. Closing them here is what makes the rail stop lying.
+      onSessionEnd: ({ projectPath, sessionId, reason, resetsAt }) => {
+        if (sessionId) {
+          for (const id of runs.endSessionRuns(sessionId, now(), reason)) {
+            hub.broadcast('run.close', runs.get(id));
+          }
+        }
+        if (reason === 'rate_limit') resumes?.arm({ projectPath, resetsAt });
+      },
+    });
+    resumes = createResumeScheduler({ sessions: chatSessions, hub, now });
     const catalog = createCatalog({ claudeDir, projectRoot });
     catalog.watch((next) => hub.broadcast('catalog.changed', { scannedAt: next.scannedAt }));
 
@@ -100,7 +120,12 @@ export async function startDaemon({
         } },
       streamRoute,
       catalogRoute({ catalog }),
+      ...catalogWriteRoutes({ catalog, claudeDir, hub }),
+      // Read-only, and confined to the user's home directory inside the route itself: the add-project
+      // form needs to show what is on disk, not a way to enumerate the whole machine.
+      ...fsRoutes({ projects }),
       runsRoute({ runs }),
+      runsDismissRoute({ runs, hub, now }),
       hooksRoute({ runs, sessions, hub, now }),
       ...chatRoutes({ sessions: chatSessions, permissions, chat, projects, now }),
       staticRoute({ uiDir }),
@@ -118,6 +143,7 @@ export async function startDaemon({
       async stop() {
         try {
           stopSweeper();
+          resumes.stop();
           // Sessions first: each holds a child process and an open permission prompt may be
           // parked on a promise. Closing the gate afterwards denies anything still waiting, so
           // nothing is left holding the event loop open after stop() resolves.

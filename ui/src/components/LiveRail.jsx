@@ -5,6 +5,20 @@ import { finishedIds, runToolUseId, visibleRuns } from './runList.js';
 
 const rank = (r) => (r.status === 'running' ? 0 : 1);
 
+// A failed clear used to blame the connection whatever went wrong, which sent the reader looking in
+// entirely the wrong place: the daemon that has no `/api/runs/dismiss` at all answers `not_found`
+// from its route table, and it is a daemon still running the code it was started with. Restarting it
+// is the fix, and nothing about waiting for a connection was ever going to help.
+function explainClear(err) {
+  if (err?.status === 404) {
+    return 'this daemon has no clear endpoint — it is still running the code it was started with. Stop it and open the dashboard again to pick up the current version';
+  }
+  if (err?.status === 401 || err?.message === 'unauthorized') {
+    return 'the session expired — reopen the URL printed by agentpanel open';
+  }
+  return `${err?.message ?? String(err)} — try again when the connection is back`;
+}
+
 export function LiveRail({ runs, now, taskActivity = {}, projectPath = null }) {
   // One row open at a time, and kept here rather than in App: which row a user has expanded is a
   // property of this panel, and lifting it would re-render the whole shell on every click.
@@ -39,7 +53,7 @@ export function LiveRail({ runs, now, taskActivity = {}, projectPath = null }) {
         for (const id of ids) next.delete(id);
         return next;
       });
-      setClearError(err?.message ?? String(err));
+      setClearError(explainClear(err));
     } finally {
       setClearing(false);
     }
@@ -68,8 +82,7 @@ export function LiveRail({ runs, now, taskActivity = {}, projectPath = null }) {
       </div>
       {clearError && (
         <p className="notice" role="status">
-          Those rows could not be cleared ({clearError}) — they are still here, and still in the
-          daemon. Try again when the connection is back.
+          Those rows could not be cleared: {clearError}. They are still here, and still in the daemon.
         </p>
       )}
       {ordered.length === 0

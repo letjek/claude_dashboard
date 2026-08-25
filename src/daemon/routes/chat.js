@@ -67,7 +67,7 @@ function normalizeForRead(value) {
 const DECISIONS = new Set(['allow', 'deny', 'always']);
 const PERMISSION_PREFIX = '/api/permissions/';
 
-export function chatRoutes({ sessions, permissions, chat, projects, now = Date.now, historyLimit = 200 }) {
+export function chatRoutes({ sessions, permissions, chat, projects, resumes, now = Date.now, historyLimit = 200 }) {
   // Every mutating chat route needs the same two things: a parsed body and a real project
   // directory. Doing it once means a new route cannot forget the path check.
   const withProject = (handler) => async (req, res, ctx) => {
@@ -150,6 +150,10 @@ export function chatRoutes({ sessions, permissions, chat, projects, now = Date.n
           stopReason: state.stopReason ?? null,
           resetsAt: state.resetsAt ?? null,
           rateLimit: state.rateLimit ?? null,
+          // Whether the single automatic attempt is still waiting on the reset. A tab that reloaded
+          // after the death witnessed no `resume_scheduled` event, and without this it would offer a
+          // manual Resume that is about to be duplicated by the daemon's own.
+          resumeArmed: resumes?.status(projectPath).armed ?? false,
           messages: chat.list(projectPath, historyLimit),
         });
       },

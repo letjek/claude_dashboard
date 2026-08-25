@@ -127,7 +127,7 @@ export async function startDaemon({
       runsRoute({ runs }),
       runsDismissRoute({ runs, hub, now }),
       hooksRoute({ runs, sessions, hub, now }),
-      ...chatRoutes({ sessions: chatSessions, permissions, chat, projects, now }),
+      ...chatRoutes({ sessions: chatSessions, permissions, chat, projects, resumes, now }),
       staticRoute({ uiDir }),
     ];
 

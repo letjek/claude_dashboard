@@ -62,6 +62,19 @@ export function createInputQueue() {
 // limit as its own message type, so the last one seen is what classifies the death.
 const RATE_LIMITED = /rate.?limit|usage limit|quota/i;
 
+// The SDK's own type does not say whether `resetsAt` is seconds or milliseconds, and the repo held
+// both readings at once: the transcript rendered it as seconds while the resume scheduler compared it
+// against Date.now(). Read as milliseconds, a seconds value is always in the past, so the one
+// automatic resume would fire on the next tick instead of when the limit lifts — spending it while
+// still rate limited. Any real epoch below 1e12 is seconds (1e12 ms is September 2001; 1e12 seconds
+// is the year 33658), so this settles it in both directions, once, before anything downstream sees it.
+const EPOCH_MS_FLOOR = 1e12;
+
+function toEpochMs(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return value < EPOCH_MS_FLOOR ? Math.round(value * 1000) : value;
+}
+
 export function createSessionManager({
   store, hub, now = Date.now,
   permissions,
@@ -213,9 +226,7 @@ export function createSessionManager({
     const rejected = info?.status === 'rejected' || info?.overageStatus === 'rejected';
     const mentioned = RATE_LIMITED.test([describe(err), ...session.stderr].join('\n'));
     const stopReason = rejected || (err != null && mentioned) ? 'rate_limit' : 'session_ended';
-    const resetsAt = stopReason === 'rate_limit'
-      ? (typeof info?.resetsAt === 'number' ? info.resetsAt : null)
-      : null;
+    const resetsAt = stopReason === 'rate_limit' ? toEpochMs(info?.resetsAt) : null;
     const stop = { stopReason, resetsAt, rateLimitType: info?.rateLimitType ?? null };
     lastStop.set(session.projectPath, { ...stop, at: now() });
     return stop;
@@ -249,7 +260,10 @@ export function createSessionManager({
           subagentType: message.subagent_type ?? null,
         });
       case 'rate_limit_event': {
-        const info = message.rate_limit_info ?? null;
+        const raw = message.rate_limit_info ?? null;
+        // Normalised here and nowhere else, so the stored copy, the broadcast copy and the resume
+        // scheduler can never disagree about what the number means.
+        const info = raw === null ? null : { ...raw, resetsAt: toEpochMs(raw.resetsAt) };
         // Kept per project rather than per session: the session object is dropped the moment the
         // pump ends, and this is exactly what the pump needs to read on its way out.
         if (info) lastRateLimit.set(session.projectPath, info);

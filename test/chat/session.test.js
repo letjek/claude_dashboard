@@ -387,7 +387,7 @@ const rateLimitEvent = (over = {}) => ({
   type: 'rate_limit_event',
   uuid: 'u-rl',
   session_id: 'sess-1',
-  rate_limit_info: { status: 'rejected', resetsAt: 99_000, rateLimitType: 'five_hour', ...over },
+  rate_limit_info: { status: 'rejected', resetsAt: 1_800_000_000_000, rateLimitType: 'five_hour', ...over },
 });
 
 test('a session that dies after a rejected rate limit is reported as rate limited, with its reset time', async () => {
@@ -401,14 +401,14 @@ test('a session that dies after a rejected rate limit is reported as rate limite
   await settled();
 
   assert.deepEqual(ends, [{
-    projectPath: '/p/one', sessionId: 'sess-1', reason: 'rate_limit', resetsAt: 99_000,
+    projectPath: '/p/one', sessionId: 'sess-1', reason: 'rate_limit', resetsAt: 1_800_000_000_000,
   }]);
 
   // And the user is told the real reason rather than "ended unexpectedly", which is what hid it.
   const [error] = hub.of('chat.error');
   assert.match(error.message, /rate limit ran out/i);
   assert.equal(error.stopReason, 'rate_limit');
-  assert.equal(error.resetsAt, 99_000);
+  assert.equal(error.resetsAt, 1_800_000_000_000);
   await sessions.close();
 });
 
@@ -482,7 +482,7 @@ test('the stop reason survives for a page that loads after the session is gone',
   const state = sessions.get('/p/one');
   assert.equal(state.running, false);
   assert.equal(state.stopReason, 'rate_limit');
-  assert.equal(state.resetsAt, 99_000);
+  assert.equal(state.resetsAt, 1_800_000_000_000);
   assert.equal(state.rateLimit.rateLimitType, 'five_hour');
   await sessions.close();
 });
@@ -531,5 +531,40 @@ test('a listener that throws on the way out does not take the pump down with it'
   assert.equal(reported.length, 1);
   assert.equal(reported[0].fatal, false);
   assert.match(reported[0].message, /tidy up/i);
+  await sessions.close();
+});
+
+test('a reset time reported in seconds is carried as milliseconds like everything else', async () => {
+  // The SDK's type does not say which unit it uses, and this repo read it both ways at once. Read as
+  // milliseconds a seconds value is always in the past, which would fire the one automatic resume
+  // immediately and spend it while the limit was still in force.
+  const { sdk, sessions, ends, hub } = endHarness();
+  await sessions.send('/p/one', 'go');
+  const call = sdk.last();
+  call.outbox.push(initMessage());
+  call.outbox.push(rateLimitEvent({ resetsAt: 1_800_000_000 }));
+  await settled();
+  call.outbox.fail(new Error('stream closed'));
+  await settled();
+
+  assert.equal(ends.at(-1).resetsAt, 1_800_000_000_000);
+  assert.equal(sessions.get('/p/one').resetsAt, 1_800_000_000_000);
+  // And the transcript is told the same number, so it cannot render a different reset time.
+  const warned = hub.of('chat.status').filter((s) => s.kind === 'rate_limit_event');
+  assert.equal(warned.at(-1).data.resetsAt, 1_800_000_000_000);
+  await sessions.close();
+});
+
+test('a millisecond reset time is left exactly as it arrived', async () => {
+  const { sdk, sessions, ends } = endHarness();
+  await sessions.send('/p/one', 'go');
+  const call = sdk.last();
+  call.outbox.push(initMessage());
+  call.outbox.push(rateLimitEvent({ resetsAt: 1_800_000_000_000 }));
+  await settled();
+  call.outbox.fail(new Error('stream closed'));
+  await settled();
+
+  assert.equal(ends.at(-1).resetsAt, 1_800_000_000_000);
   await sessions.close();
 });

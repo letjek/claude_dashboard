@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { postJson } from '../api.js';
 import { RunRow } from './RunRow.jsx';
+import { OfficeScene } from './OfficeScene.jsx';
 import { finishedIds, runToolUseId, visibleRuns } from './runList.js';
 
 const rank = (r) => (r.status === 'running' ? 0 : 1);
@@ -67,6 +68,7 @@ export function LiveRail({ runs, now, taskActivity = {}, projectPath = null }) {
     // list item, and the default set is what actually catches those. The per-second elapsed clock
     // that ticks inside every row is marked aria-hidden in RunRow so it never gets announced.
     <aside className="rail" aria-label="Live agents" aria-live="polite">
+      <OfficeScene runs={ordered} />
       <div className="rail-head">
         <h2>Live agents</h2>
         {finished.length > 0 && (

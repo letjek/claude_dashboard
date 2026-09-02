@@ -64,3 +64,17 @@ export function insertPaths(text, caret, paths) {
   const inserted = `${lead}${body}${tail}`;
   return { text: `${before}${inserted}${after}`, caret: before.length + inserted.length };
 }
+
+/**
+ * The draft with one backticked `path` taken back out — what dismissing an attachment chip undoes.
+ * Eats one trailing space along with it so removing a path out of the middle of several does not
+ * leave a double space behind; the first occurrence only, which is what insertPaths itself produces.
+ */
+export function removePath(text, path) {
+  const token = `\`${path}\``;
+  const at = text.indexOf(token);
+  if (at === -1) return text;
+  const end = at + token.length;
+  const ateSpace = text[end] === ' ';
+  return text.slice(0, at) + text.slice(ateSpace ? end + 1 : end);
+}

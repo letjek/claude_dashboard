@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { Markdown } from '../src/components/Markdown.jsx';
 
 const md = (source) => render(<Markdown source={source} />).container.querySelector('.md');
@@ -110,6 +110,60 @@ describe('Markdown — what it refuses', () => {
 
   it('uses the href as the label when a link has none, rather than rendering an empty target', () => {
     expect(md('[](https://example.com/x)').querySelector('a').textContent).toBe('https://example.com/x');
+  });
+});
+
+describe('Markdown — bare links', () => {
+  it('links a bare https URL sitting in prose, not just [text](url) syntax', () => {
+    const link = md('see https://example.com/x for details').querySelector('a');
+    expect(link.getAttribute('href')).toBe('https://example.com/x');
+    expect(link.textContent).toBe('https://example.com/x');
+    expect(link.getAttribute('target')).toBe('_blank');
+  });
+
+  it('does not swallow the sentence punctuation that follows a bare URL', () => {
+    const link = md('read https://example.com/x, then continue.').querySelector('a');
+    expect(link.getAttribute('href')).toBe('https://example.com/x');
+  });
+
+  it('links every bare URL in a paragraph with more than one', () => {
+    const el = md('https://a.example and https://b.example');
+    expect([...el.querySelectorAll('a')].map((a) => a.getAttribute('href'))).toEqual([
+      'https://a.example', 'https://b.example',
+    ]);
+  });
+});
+
+describe('Markdown — clickable paths', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('renders a backticked absolute path as something other than plain code', () => {
+    const el = md('the file is at `/Users/daps/notes.pdf`');
+    expect(el.querySelector('code')).toBeNull();
+    const trigger = screen.getByRole('button', { name: /notes\.pdf/i });
+    expect(trigger.textContent).toBe('/Users/daps/notes.pdf');
+  });
+
+  it('leaves an ordinary code span alone', () => {
+    const el = md('run `npm install` first');
+    expect(el.querySelector('code').textContent).toBe('npm install');
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('also treats a tilde path as a path, not code', () => {
+    md('`~/notes.txt`');
+    expect(screen.getByRole('button', { name: /notes\.txt/i })).toBeTruthy();
+  });
+
+  it('reveals the path when clicked, and reports failure without throwing', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    md('`/Users/daps/notes.pdf`');
+    fireEvent.click(screen.getByRole('button', { name: /notes\.pdf/i }));
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledWith('/api/fs/reveal', expect.objectContaining({
+      body: JSON.stringify({ path: '/Users/daps/notes.pdf' }),
+    }));
   });
 });
 

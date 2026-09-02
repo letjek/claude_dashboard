@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchJson, connectStream, uploadFile } from '../src/api.js';
+import { fetchJson, connectStream, uploadFile, revealPath } from '../src/api.js';
 
 describe('fetchJson', () => {
   beforeEach(() => {
@@ -55,6 +55,30 @@ describe('uploadFile', () => {
   it('throws the daemon\'s error code on failure, the same way postJson does', async () => {
     fetch.mockResolvedValue({ ok: false, status: 413, json: async () => ({ error: 'too_large' }) });
     await expect(uploadFile({ name: 'big.bin' }, {})).rejects.toThrow('too_large');
+  });
+});
+
+describe('revealPath', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('posts the path to /api/fs/reveal as JSON', async () => {
+    fetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) });
+    await revealPath('/Users/daps/notes.pdf');
+    expect(fetch).toHaveBeenCalledWith('/api/fs/reveal', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ path: '/Users/daps/notes.pdf' }),
+    });
+  });
+
+  it('throws the daemon\'s error code on failure', async () => {
+    fetch.mockResolvedValue({ ok: false, status: 404, json: async () => ({ error: 'not_found' }) });
+    await expect(revealPath('/nope')).rejects.toThrow('not_found');
   });
 });
 

@@ -5,9 +5,10 @@
 // neither `public` nor `stateChanging`, so it inherits the daemon's token + Origin guard like
 // every other route.
 import { readdirSync, statSync, existsSync, realpathSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { isAbsolute, join, dirname, sep } from 'node:path';
-import { json } from './body.js';
+import { json, readJson } from './body.js';
 
 // The whole security property of this file lives in the order of these two steps: resolve first,
 // then confine. `realpathSync` collapses `..`, symlinks and macOS's /tmp -> /private/tmp before
@@ -99,4 +100,42 @@ export function fsRoutes({ projects, home = homedir() }) {
       },
     },
   ];
+}
+
+// `open -R` selects the file itself in Finder; `xdg-open` has no equivalent across Linux desktop
+// environments, so the best it can do is open the folder the file lives in. No win32 entry, same as
+// the CLI's own opener table — package.json's `os` field declares only darwin and linux supported.
+const REVEALERS = {
+  darwin: (path) => ['open', ['-R', path]],
+  linux: (path) => ['xdg-open', [dirname(path)]],
+};
+
+// A click on a path in the transcript, not a browse — the daemon already runs code as this user, so
+// asking it to point Finder at one of their own files is not a new trust boundary. `run` stands in
+// for `execFile` in tests, the same seam the CLI's own `openUrl` uses to avoid actually launching a
+// window during a test run.
+export function fsRevealRoute({ platform = process.platform, run = execFile } = {}) {
+  return {
+    method: 'POST', path: '/api/fs/reveal', stateChanging: true,
+    handler: async (req, res) => {
+      const body = await readJson(req, res);
+      if (body === undefined) return;
+
+      const target = typeof body.path === 'string' ? body.path : '';
+      if (target === '' || !isAbsolute(target)) return json(res, 400, { error: 'bad_path' });
+
+      let real;
+      try { real = realpathSync(target); }
+      catch { return json(res, 404, { error: 'not_found' }); }
+
+      const build = REVEALERS[platform];
+      if (!build) return json(res, 501, { error: 'unsupported_platform' });
+
+      const [cmd, args] = build(real);
+      run(cmd, args, (err) => {
+        if (err) return json(res, 500, { error: 'reveal_failed', detail: err.message });
+        json(res, 200, { ok: true });
+      });
+    },
+  };
 }

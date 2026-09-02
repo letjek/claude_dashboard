@@ -125,7 +125,7 @@ describe('AddAgentForm — a successful create', () => {
     const { form } = draw({ projectPath: PROJECT });
     fireEvent.click(screen.getByRole('radio', { name: /project/i }));
     fillValid();
-    set(/^model$/i, ' opus ');
+    set(/^model$/i, 'opus');
     set(/^tools$/i, 'Read, Grep , ,Glob');
     await act(async () => { fireEvent.submit(form); });
 
@@ -223,6 +223,69 @@ describe('AddAgentForm — rejections', () => {
     fillValid();
     await act(async () => { fireEvent.submit(form); });
     expect(screen.getByRole('alert').textContent).toMatch(/agentpanel open/);
+  });
+});
+
+describe('AddAgentForm — model choice', () => {
+  it('offers the model aliases the SDK accepts, plus inherit', () => {
+    draw();
+    const select = screen.getByLabelText(/^model$/i);
+    expect([...select.options].map((o) => o.value)).toEqual(['', 'sonnet', 'opus', 'haiku', 'fable']);
+    expect(select.value).toBe('');
+  });
+});
+
+const EXISTING = {
+  scope: 'user', name: 'code-reviewer', description: 'Reviews a diff.',
+  model: 'opus', tools: ['Read', 'Grep'], path: '/Users/me/.claude/agents/code-reviewer.md',
+};
+
+describe('AddAgentForm — editing an existing agent', () => {
+  const drawEditing = (over = {}) => draw({ agent: EXISTING, ...over });
+
+  it('prefills every field from the agent, fetches the prompt, and locks name and scope', async () => {
+    const fetchMock = stub(async (url) => (
+      url.startsWith('/api/catalog/agents/body')
+        ? res(200, { prompt: 'Review the diff carefully.' })
+        : res(200, {})
+    ));
+    drawEditing();
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/catalog/agents/body'), expect.any(Object));
+
+    expect(nameBox().value).toBe('code-reviewer');
+    expect(nameBox().disabled).toBe(true);
+    expect(screen.getByLabelText(/^description$/i).value).toBe('Reviews a diff.');
+    expect(screen.getByLabelText(/^model$/i).value).toBe('opus');
+    expect(screen.getByLabelText(/^tools$/i).value).toBe('Read, Grep');
+    await waitFor(() => expect(screen.getByLabelText(/^system prompt$/i).value).toBe('Review the diff carefully.'));
+    expect(screen.getByRole('button', { name: /save changes/i })).toBeTruthy();
+  });
+
+  it('posts the update route with the edited fields, keyed by the agent\'s own scope and name', async () => {
+    const fetchMock = stub(async (url) => (
+      url.startsWith('/api/catalog/agents/body') ? res(200, { prompt: 'Old prompt.' }) : res(200, { agent: EXISTING })
+    ));
+    const { form } = drawEditing();
+    await waitFor(() => expect(screen.getByLabelText(/^system prompt$/i).value).toBe('Old prompt.'));
+    set(/^description$/i, 'Reviews Rust too.');
+    await act(async () => { fireEvent.submit(form); });
+
+    const updateCall = fetchMock.mock.calls.find(([url]) => url === '/api/catalog/agents/update');
+    expect(updateCall).toBeTruthy();
+    expect(JSON.parse(updateCall[1].body)).toEqual({
+      scope: 'user', name: 'code-reviewer', description: 'Reviews Rust too.',
+      prompt: 'Old prompt.', model: 'opus', tools: ['Read', 'Grep'],
+    });
+  });
+
+  it('reports a 404 as the agent having disappeared from disk', async () => {
+    const fetchMock = stub(async (url) => (
+      url.startsWith('/api/catalog/agents/body') ? res(200, { prompt: 'x' }) : res(404, { error: 'not_found' })
+    ));
+    const { form } = drawEditing();
+    await waitFor(() => expect(screen.getByLabelText(/^system prompt$/i).value).toBe('x'));
+    await act(async () => { fireEvent.submit(form); });
+    expect(screen.getByRole('alert').textContent).toMatch(/no longer exists on disk/i);
   });
 });
 

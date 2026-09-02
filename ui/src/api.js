@@ -31,6 +31,22 @@ export async function postJson(path, body) {
   return payload;
 }
 
+// The one route that takes file bytes rather than JSON: the composer's attach button, where a
+// click-based file picker cannot expose a path the way a Finder drag sometimes does. `file` is
+// posted as the body verbatim — fetch streams a File/Blob without buffering it into a string first.
+export async function uploadFile(file, { projectPath = null } = {}) {
+  const params = new URLSearchParams({ name: file.name });
+  if (projectPath) params.set('projectPath', projectPath);
+  const res = await fetch(`/api/uploads?${params}`, { method: 'POST', body: file });
+  let payload = null;
+  try { payload = await res.json(); } catch { /* an error response may carry no body at all */ }
+  if (res.status === 401) throw Object.assign(new Error('unauthorized'), { status: 401 });
+  if (!res.ok) {
+    throw Object.assign(new Error(payload?.error ?? `request_failed_${res.status}`), { status: res.status, body: payload });
+  }
+  return payload;
+}
+
 const EVENTS = [
   'run.open', 'run.close', 'run.enrich', 'session.end', 'catalog.changed',
   // Chat rides the same stream. EventSource dispatches only to named listeners, so an event the

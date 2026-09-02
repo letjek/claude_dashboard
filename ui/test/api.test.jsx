@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchJson, connectStream } from '../src/api.js';
+import { fetchJson, connectStream, uploadFile } from '../src/api.js';
 
 describe('fetchJson', () => {
   beforeEach(() => {
@@ -24,6 +24,37 @@ describe('fetchJson', () => {
   it('throws a labeled error for any other failed status', async () => {
     fetch.mockResolvedValue({ ok: false, status: 500 });
     await expect(fetchJson('/api/runs')).rejects.toThrow('request_failed_500');
+  });
+});
+
+describe('uploadFile', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('posts the file body as-is to /api/uploads, named and scoped by query string', async () => {
+    fetch.mockResolvedValue({ ok: true, status: 201, json: async () => ({ path: '/tmp/uploads/x/notes.pdf' }) });
+    const file = { name: 'notes.pdf' };
+    const body = await uploadFile(file, { projectPath: '/Users/daps/proj' });
+    expect(body).toEqual({ path: '/tmp/uploads/x/notes.pdf' });
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toBe('/api/uploads?name=notes.pdf&projectPath=%2FUsers%2Fdaps%2Fproj');
+    expect(options.method).toBe('POST');
+    expect(options.body).toBe(file);
+  });
+
+  it('omits projectPath entirely when none is selected', async () => {
+    fetch.mockResolvedValue({ ok: true, status: 201, json: async () => ({ path: '/tmp/x' }) });
+    await uploadFile({ name: 'a.png' }, { projectPath: null });
+    expect(fetch.mock.calls[0][0]).toBe('/api/uploads?name=a.png');
+  });
+
+  it('throws the daemon\'s error code on failure, the same way postJson does', async () => {
+    fetch.mockResolvedValue({ ok: false, status: 413, json: async () => ({ error: 'too_large' }) });
+    await expect(uploadFile({ name: 'big.bin' }, {})).rejects.toThrow('too_large');
   });
 });
 

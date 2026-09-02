@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { AddSkillForm } from '../components/AddSkillForm.jsx';
+import { PlusIcon } from '../components/icons.jsx';
 
 export function Skills({ skills, initialQuery = '', catalogError, projectPath = null, onCreated }) {
   const [query, setQuery] = useState(initialQuery);
@@ -24,7 +25,12 @@ export function Skills({ skills, initialQuery = '', catalogError, projectPath = 
               onCancel={() => setAdding(false)}
             />
           )
-          : <button type="button" className="btn subtle" onClick={() => setAdding(true)}>Add skill</button>}
+          : (
+            <button type="button" className="btn accent" onClick={() => setAdding(true)}>
+              <PlusIcon />
+              Add skill
+            </button>
+          )}
       </div>
 
       {failedToLoad

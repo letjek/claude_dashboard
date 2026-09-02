@@ -67,7 +67,7 @@ function normalizeForRead(value) {
 const DECISIONS = new Set(['allow', 'deny', 'always']);
 const PERMISSION_PREFIX = '/api/permissions/';
 
-export function chatRoutes({ sessions, permissions, chat, projects, resumes, now = Date.now, historyLimit = 200 }) {
+export function chatRoutes({ sessions, permissions, chat, projects, resumes, uploads, now = Date.now, historyLimit = 200 }) {
   // Every mutating chat route needs the same two things: a parsed body and a real project
   // directory. Doing it once means a new route cannot forget the path check.
   const withProject = (handler) => async (req, res, ctx) => {
@@ -108,6 +108,9 @@ export function chatRoutes({ sessions, permissions, chat, projects, resumes, now
       method: 'POST', path: '/api/chat/reset', stateChanging: true,
       handler: withProject(async ({ res, projectPath }) => {
         await sessions.reset(projectPath);
+        // Whatever was attached for this project belonged to the transcript that just disappeared —
+        // best-effort, since a reset having already happened is not a reason to fail the request.
+        await uploads?.clear(projectPath);
         json(res, 200, { ok: true, projectPath });
       }),
     },

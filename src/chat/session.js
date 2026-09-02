@@ -154,8 +154,8 @@ export function createSessionManager({
     } catch (err) {
       live.delete(projectPath);
       emit('chat.error', projectPath, {
-        message: 'Could not start a Claude session.',
-        detail: describe(err),
+        message: startFailureMessage(err),
+        detail: [describe(err), startFailureHint(err)].filter(Boolean).join('\n\n'),
         fatal: true,
       });
       throw err;
@@ -506,5 +506,28 @@ function toWireBlock(block) {
       return null;
   }
 }
+
+// The SDK ships its CLI as one optional dependency per platform, so npm installs only the build
+// matching the architecture it ran under. Install with an x64 Node under Rosetta on an Apple Silicon
+// machine and the arm64 build — the one the SDK then goes looking for — was never fetched. The SDK's
+// own message names the missing target and stops there, which reads as a broken dashboard rather
+// than as one install away from working, and it is the same wording whether the user just reset the
+// session or never had a working one.
+const MISSING_BINARY = /native cli binary/i;
+
+const startFailureMessage = (err) =>
+  (MISSING_BINARY.test(describe(err))
+    ? 'Could not start a Claude session: the Claude CLI for this machine is not installed.'
+    : 'Could not start a Claude session.');
+
+const startFailureHint = (err) =>
+  (MISSING_BINARY.test(describe(err))
+    ? [
+      'The Claude Agent SDK installs its CLI per architecture. This usually means the dashboard was',
+      'installed by a Node built for a different one — an x64 Node under Rosetta on an Apple Silicon',
+      'Mac is the common case, and `node -p process.arch` next to `uname -m` will say so.',
+      'Reinstall with a Node matching the machine (and without --omit=optional), then restart the daemon.',
+    ].join(' ')
+    : null);
 
 const describe = (err) => String(err?.stack ?? err?.message ?? err ?? 'unknown error');

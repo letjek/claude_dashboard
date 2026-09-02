@@ -2,8 +2,9 @@
 //
 // Creating an agent or a skill on disk. Pure rendering plus two writers; nothing here knows about
 // HTTP, so the rules below hold for any caller.
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { parseFrontmatter } from '../core/frontmatter.js';
 
 const NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const MAX_NAME = 64;
@@ -128,6 +129,37 @@ export function writeAgent({ claudeDir, projectRoot, scope, name, description, m
     return fail(err);
   }
   return { ok: true, path };
+}
+
+// The one deliberate exception to writeAgent's "creates, never edits" rule: reached only from a
+// form that opened by reading this same file, so overwriting it is the edit the user asked for, not
+// a collision with someone else's work. `not_found` rather than creating it — an update is not a
+// second way to create an agent, and the form that calls this always has a real file behind it.
+export function updateAgent({ claudeDir, projectRoot, scope, name, description, model, tools, prompt }) {
+  if (!validateName(name)) return { ok: false, reason: 'bad_name' };
+  const dir = targetDir({ claudeDir, projectRoot, scope, kind: 'agent' });
+  if (dir === null) return { ok: false, reason: 'bad_scope' };
+
+  const path = join(dir, `${name}.md`);
+  if (!existsSync(path)) return { ok: false, reason: 'not_found', path };
+  try {
+    writeFileSync(path, renderAgent({ name, description, model, tools, prompt }));
+  } catch (err) {
+    return fail(err);
+  }
+  return { ok: true, path };
+}
+
+// The prompt body an edit form needs to prefill — the catalog scan itself never reads past the
+// frontmatter, since a listing has no use for it and a body can run to several kilobytes.
+export function readAgentSource({ claudeDir, projectRoot, scope, name }) {
+  const dir = targetDir({ claudeDir, projectRoot, scope, kind: 'agent' });
+  if (dir === null) return { ok: false, reason: 'bad_scope' };
+  const path = join(dir, `${name}.md`);
+  if (!existsSync(path)) return { ok: false, reason: 'not_found' };
+  let text;
+  try { text = readFileSync(path, 'utf8'); } catch (err) { return fail(err); }
+  return { ok: true, prompt: parseFrontmatter(text).body.trim() };
 }
 
 export function writeSkill({ claudeDir, projectRoot, scope, name, description, body }) {

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { parseFrontmatter } from '../../src/core/frontmatter.js';
 import {
   validateName, targetDir, renderAgent, renderSkill, writeAgent, writeSkill,
+  updateAgent, readAgentSource,
 } from '../../src/catalog/write.js';
 
 function tree() {
@@ -149,6 +150,46 @@ test('writing the same agent twice reports exists and leaves the first file unto
   const second = writeAgent({ ...args, description: 'Replacement.', prompt: 'second body' });
   assert.deepEqual(second, { ok: false, reason: 'exists', path: first.path });
   assert.equal(readFileSync(first.path, 'utf8'), original);
+});
+
+// updateAgent is the deliberate exception to the "creates, never edits" rule above: it is reached
+// only from a form that opened by reading the file that already exists, and it refuses to invent
+// one that does not.
+test('updateAgent overwrites an agent that already exists', () => {
+  const { claudeDir, projectRoot } = tree();
+  const first = writeAgent({ claudeDir, projectRoot, scope: 'user', name: 'reviewer', description: 'Original.', prompt: 'first body' });
+  assert.equal(first.ok, true);
+
+  const result = updateAgent({
+    claudeDir, projectRoot, scope: 'user', name: 'reviewer',
+    description: 'Replacement.', model: 'opus', tools: ['Read'], prompt: 'second body',
+  });
+  assert.deepEqual(result, { ok: true, path: first.path });
+  const { data, body } = parseFrontmatter(readFileSync(first.path, 'utf8'));
+  assert.equal(data.description, 'Replacement.');
+  assert.equal(data.model, 'opus');
+  assert.equal(body.trim(), 'second body');
+});
+
+test('updateAgent refuses to invent a file that was never created', () => {
+  const { claudeDir, projectRoot } = tree();
+  const result = updateAgent({ claudeDir, projectRoot, scope: 'user', name: 'ghost', description: 'x', prompt: 'y' });
+  assert.deepEqual(result, { ok: false, reason: 'not_found', path: join(claudeDir, 'agents', 'ghost.md') });
+  assert.equal(existsSync(join(claudeDir, 'agents', 'ghost.md')), false);
+});
+
+test('readAgentSource returns the prompt body of an existing agent', () => {
+  const { claudeDir, projectRoot } = tree();
+  writeAgent({ claudeDir, projectRoot, scope: 'project', name: 'qa', description: 'x', prompt: 'Write tests.\n\nDo not fix bugs.' });
+  const result = readAgentSource({ claudeDir, projectRoot, scope: 'project', name: 'qa' });
+  assert.equal(result.ok, true);
+  assert.equal(result.prompt, 'Write tests.\n\nDo not fix bugs.');
+});
+
+test('readAgentSource reports not_found rather than inventing an empty prompt', () => {
+  const { claudeDir, projectRoot } = tree();
+  const result = readAgentSource({ claudeDir, projectRoot, scope: 'user', name: 'ghost' });
+  assert.deepEqual(result, { ok: false, reason: 'not_found' });
 });
 
 test('a skill is written to <dir>/<name>/SKILL.md', () => {

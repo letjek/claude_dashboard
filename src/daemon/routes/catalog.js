@@ -6,7 +6,9 @@
 // `~/.claude/agents`.
 import { json, readJson } from './body.js';
 import { normalizeProjectPath } from './chat.js';
-import { foldDescription, validateName, writeAgent, writeSkill } from '../../catalog/write.js';
+import {
+  foldDescription, validateName, writeAgent, writeSkill, updateAgent, readAgentSource,
+} from '../../catalog/write.js';
 
 export function catalogRoute({ catalog }) {
   return {
@@ -94,6 +96,67 @@ export function catalogWriteRoutes({ catalog, claudeDir, hub }) {
             path: result.path,
           },
         });
+      },
+    },
+    {
+      // The one place an agent file is opened for editing rather than created: reached only from a
+      // form that read this same file first, so overwriting it is the edit the user asked for. Never
+      // creates one that was not already there — that is still exclusively `/api/catalog/agents`.
+      method: 'POST', path: '/api/catalog/agents/update', stateChanging: true,
+      handler: async (req, res) => {
+        const body = await readJson(req, res);
+        if (body === undefined) return;
+
+        const scope = resolveScope(body);
+        if (!scope.ok) return json(res, scope.status, { error: scope.error });
+        if (!validateName(body.name)) return json(res, 400, { error: 'bad_name' });
+
+        const description = nonEmpty(body.description);
+        if (description === null) return json(res, 400, { error: 'empty_description' });
+        const prompt = nonEmpty(body.prompt);
+        if (prompt === null) return json(res, 400, { error: 'empty_body' });
+
+        const model = nonEmpty(body.model);
+        const tools = normalizeTools(body.tools);
+        const result = updateAgent({
+          claudeDir, projectRoot: scope.projectRoot, scope: body.scope,
+          name: body.name, description, model, tools, prompt,
+        });
+        if (!result.ok) {
+          if (result.reason === 'not_found') return json(res, 404, { error: 'not_found' });
+          return failure(res, result);
+        }
+
+        announce();
+        json(res, 200, {
+          agent: {
+            kind: 'agent',
+            name: body.name,
+            description: foldDescription(description),
+            tools,
+            model: model ? model.trim() : null,
+            scope: body.scope,
+            source: null,
+            path: result.path,
+          },
+        });
+      },
+    },
+    {
+      // Read-only, and needed only by the edit form: the catalog scan itself never reads a prompt
+      // body, since a listing has no use for it and a body can run to several kilobytes.
+      method: 'GET', path: '/api/catalog/agents/body',
+      handler: (_req, res, ctx) => {
+        const rawScope = ctx.url.searchParams.get('scope');
+        const scope = resolveScope({ scope: rawScope, projectPath: ctx.url.searchParams.get('projectPath') });
+        if (!scope.ok) return json(res, scope.status, { error: scope.error });
+
+        const name = ctx.url.searchParams.get('name') ?? '';
+        if (!validateName(name)) return json(res, 400, { error: 'bad_name' });
+
+        const result = readAgentSource({ claudeDir, projectRoot: scope.projectRoot, scope: rawScope, name });
+        if (!result.ok) return json(res, 404, { error: 'not_found' });
+        json(res, 200, { prompt: result.prompt });
       },
     },
     {

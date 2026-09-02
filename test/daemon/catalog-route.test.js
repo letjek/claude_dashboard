@@ -42,15 +42,17 @@ async function boot() {
 const AGENT = { scope: 'user', name: 'reviewer', description: 'Reviews code.', prompt: 'You review code.' };
 const SKILL = { scope: 'user', name: 'brainstorm', description: 'Turns ideas into designs.', body: '# Steps' };
 
-test('both create routes are state-changing and neither is public', async (t) => {
+test('every write route is state-changing and none is public', async (t) => {
   const h = await boot();
   t.after(() => h.stop());
   const mutating = h.routes.filter((r) => r.method === 'POST');
-  assert.equal(mutating.length, 2);
+  assert.equal(mutating.length, 3);
   for (const route of mutating) {
     assert.equal(route.stateChanging, true, `${route.path} must declare stateChanging`);
     assert.notEqual(route.public, true);
   }
+  const reader = h.routes.find((r) => r.path === '/api/catalog/agents/body');
+  assert.notEqual(reader.public, true);
 });
 
 test('reading the catalog still works alongside the create routes', async (t) => {
@@ -288,6 +290,66 @@ test('a filesystem that refuses the write is a 500, not a crashed daemon', async
 
   // The daemon is still answering.
   assert.equal((await h.get('/api/catalog')).status, 200);
+});
+
+test('update overwrites an agent that already exists, and refuses one that does not', async (t) => {
+  const h = await boot();
+  t.after(() => h.stop());
+  const created = (await (await h.post('/api/catalog/agents', AGENT)).json()).agent;
+
+  const updated = await h.post('/api/catalog/agents/update', {
+    scope: 'user', name: 'reviewer', description: 'Now reviews Rust too.', model: 'opus', prompt: 'Updated prompt.',
+  });
+  assert.equal(updated.status, 200);
+  assert.deepEqual(await updated.json(), {
+    agent: { kind: 'agent', name: 'reviewer', description: 'Now reviews Rust too.', tools: null, model: 'opus', scope: 'user', source: null, path: created.path },
+  });
+  const { data, body } = parseFrontmatter(readFileSync(created.path, 'utf8'));
+  assert.equal(data.description, 'Now reviews Rust too.');
+  assert.equal(body.trim(), 'Updated prompt.');
+
+  const missing = await h.post('/api/catalog/agents/update', { scope: 'user', name: 'ghost', description: 'x', prompt: 'y' });
+  assert.equal(missing.status, 404);
+  assert.deepEqual(await missing.json(), { error: 'not_found' });
+});
+
+test('update broadcasts catalog.changed only when it actually writes', async (t) => {
+  const h = await boot();
+  t.after(() => h.stop());
+  await h.post('/api/catalog/agents', AGENT);
+  assert.equal(h.hub.of('catalog.changed').length, 1);
+
+  await h.post('/api/catalog/agents/update', { scope: 'user', name: 'reviewer', description: 'x', prompt: 'y' });
+  assert.equal(h.hub.of('catalog.changed').length, 2);
+
+  await h.post('/api/catalog/agents/update', { scope: 'user', name: 'ghost', description: 'x', prompt: 'y' });
+  assert.equal(h.hub.of('catalog.changed').length, 2);
+});
+
+test('the body route returns the prompt of an existing agent and 404s for one that is not there', async (t) => {
+  const h = await boot();
+  t.after(() => h.stop());
+  await h.post('/api/catalog/agents', AGENT);
+
+  const res = await h.get('/api/catalog/agents/body?scope=user&name=reviewer');
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { prompt: 'You review code.' });
+
+  const missing = await h.get('/api/catalog/agents/body?scope=user&name=ghost');
+  assert.equal(missing.status, 404);
+  assert.deepEqual(await missing.json(), { error: 'not_found' });
+});
+
+test('the body route is scoped the same way create is: plugin is refused, project needs a real directory', async (t) => {
+  const h = await boot();
+  t.after(() => h.stop());
+  const pluginRes = await h.get('/api/catalog/agents/body?scope=plugin&name=reviewer');
+  assert.equal(pluginRes.status, 400);
+  assert.deepEqual(await pluginRes.json(), { error: 'bad_scope' });
+
+  const projectRes = await h.get(`/api/catalog/agents/body?scope=project&name=reviewer&projectPath=${encodeURIComponent('/nope')}`);
+  assert.equal(projectRes.status, 400);
+  assert.deepEqual(await projectRes.json(), { error: 'bad_project' });
 });
 
 test('an existing skill directory is never added to', async (t) => {

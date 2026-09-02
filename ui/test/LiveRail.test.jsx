@@ -319,8 +319,23 @@ describe('LiveRail clearing is durable', () => {
     // Pretending they went would be a lie the next reload exposes.
     await waitFor(() => expect(screen.getByText('all done')).toBeTruthy());
     expect(screen.getByText('gave up on it')).toBeTruthy();
-    expect(screen.getByRole('status').textContent).toMatch(/could not be cleared \(boom\)/);
+    expect(screen.getByRole('status').textContent).toMatch(/could not be cleared: boom — try again when the connection is back/);
     expect(screen.getByRole('button', { name: /clear finished/i }).disabled).toBe(false);
+  });
+
+  it('names a daemon too old to have the endpoint instead of blaming the connection', async () => {
+    // The real report that prompted this: the route table of a daemon started before this version
+    // answers `not_found`, and "try again when the connection is back" sent the reader hunting for a
+    // network problem that was never there. Restarting the daemon is the only thing that helps.
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, json: async () => ({ error: 'not_found' }) })));
+    render(<LiveRail {...props} runs={rows} />);
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /clear finished/i })); });
+
+    await waitFor(() => expect(screen.getByText('all done')).toBeTruthy());
+    const notice = screen.getByRole('status').textContent;
+    expect(notice).toMatch(/still running the code it was started with/);
+    expect(notice).not.toMatch(/connection/i);
   });
 });
 

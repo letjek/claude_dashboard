@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import { Agents } from '../src/pages/Agents.jsx';
 import { Skills } from '../src/pages/Skills.jsx';
 import { Activity } from '../src/pages/Activity.jsx';
@@ -36,6 +36,16 @@ describe('Agents page', () => {
     expect(screen.queryByText('tools')).toBeNull();
   });
 
+  // The button was `btn subtle` — muted text, no border, no fill — which on the dark panel reads as
+  // a caption rather than as the page's one action. The class and the icon are what say otherwise,
+  // so both are asserted rather than only the label.
+  it('offers a filled, icon-bearing button for writing an agent', () => {
+    render(<Agents agents={agents} />);
+    const button = screen.getByRole('button', { name: 'Add agent' });
+    expect(button.className).toMatch(/accent/);
+    expect(button.querySelector('svg')).toBeTruthy();
+  });
+
   it('reports a load failure instead of implying the catalog is empty', () => {
     render(<Agents agents={[]} catalogError="request_failed_500" />);
     expect(screen.getByText(/could not load/i)).toBeTruthy();
@@ -48,9 +58,44 @@ describe('Agents page', () => {
     expect(screen.queryByText(/could not load/i)).toBeNull();
     expect(screen.getByText(/could not refresh/i)).toBeTruthy();
   });
+
+  describe('editing a writable agent', () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('turns a user- or project-scoped card into an edit form when clicked', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ prompt: 'x' }) })));
+      render(<Agents agents={agents} />);
+      fireEvent.click(screen.getByRole('button', { name: /edit reviewer/i }));
+      expect(await screen.findByRole('heading', { name: /edit agent/i })).toBeTruthy();
+      // The other card is untouched.
+      expect(screen.getByText('plugin-agent')).toBeTruthy();
+    });
+
+    it('offers no edit affordance for a plugin-scoped agent', () => {
+      render(<Agents agents={agents} />);
+      expect(screen.queryByRole('button', { name: /edit plugin-agent/i })).toBeNull();
+    });
+
+    it('cancelling the edit form restores the card', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ prompt: 'x' }) })));
+      render(<Agents agents={agents} />);
+      fireEvent.click(screen.getByRole('button', { name: /edit reviewer/i }));
+      await screen.findByRole('heading', { name: /edit agent/i });
+      fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+      expect(screen.queryByRole('heading', { name: /edit agent/i })).toBeNull();
+      expect(screen.getByRole('button', { name: /edit reviewer/i })).toBeTruthy();
+    });
+  });
 });
 
 describe('Skills page', () => {
+  it('offers a filled, icon-bearing button for writing a skill', () => {
+    render(<Skills skills={skills} />);
+    const button = screen.getByRole('button', { name: 'Add skill' });
+    expect(button.className).toMatch(/accent/);
+    expect(button.querySelector('svg')).toBeTruthy();
+  });
+
   it('shows the plugin version', () => {
     render(<Skills skills={skills} />);
     expect(screen.getByText(/6\.3\.0/)).toBeTruthy();

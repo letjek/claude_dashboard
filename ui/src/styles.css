@@ -5,6 +5,9 @@
   --scope-user: #60a5fa; --scope-project: #c084fc; --scope-plugin: #2dd4bf;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
   --raise: #1b2029; --overlay: rgba(8, 10, 14, 0.78);
+  /* The one call-to-action colour. Deliberately not --running: green already means "a subagent is
+     alive" everywhere else in this UI, and a button wearing it would read as a status. */
+  --accent: #5b8cff; --accent-hover: #7aa2ff; --accent-ink: #0b1020;
   color-scheme: dark;
 }
 
@@ -323,11 +326,24 @@ main {
   overflow-wrap: anywhere;
 }
 
-.card > p {
+.card > p, .card > .card-trigger > p {
   margin: 0 0 10px;
   color: var(--muted);
   overflow-wrap: anywhere;
 }
+
+/* A writable card is a button in disguise: `all: unset` strips every button default so it reads
+   exactly like the static card it replaces, and the two properties re-applied after are the ones
+   that default actually removes and this layout still needs. */
+.card-trigger {
+  all: unset;
+  display: block;
+  width: 100%;
+  cursor: pointer;
+}
+
+.card-trigger:hover h3 { color: var(--running); }
+.card-trigger:focus-visible { outline: 2px solid var(--running); outline-offset: 2px; border-radius: 4px; }
 
 .card dl {
   margin: 0;
@@ -412,6 +428,8 @@ table.activity td:first-child {
   /* Held at the tallest frame rather than the shortest: three stubs read as a broken glyph, three
      full bars read as an indicator that simply is not moving. */
   .working i { animation: none; height: 10px; opacity: 1; }
+  .sprite, .sprite.leaving, .sprite-body { animation: none; }
+  .orchestrator { animation: none; }
 }
 
 @media (max-width: 900px) {
@@ -495,6 +513,29 @@ table.activity td:first-child {
 }
 
 .btn.subtle:hover:not(:disabled) { color: var(--text); border-color: var(--line); padding-left: 10px; }
+
+/* Creating an agent or a skill is the only action on its page, and `subtle` rendered it as muted
+   text with no border — indistinguishable from a caption on the dark panel. Filled accent with an
+   icon so the one thing to do on an empty catalog is also the one thing you can see. */
+.btn.accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.btn.accent:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+/* An icon sits on the text baseline badly; inline-flex centres it instead, and `flex: none` keeps a
+   long label from squeezing the glyph out of square. */
+.btn:has(.icon) { display: inline-flex; align-items: center; gap: 6px; }
+
+.icon { width: 13px; height: 13px; flex: none; }
+
+/* An icon-only button has no baseline text to pad around, so `.btn.subtle`'s asymmetric
+   text-button padding (built for an icon-plus-label pair) is reset to a plain square. */
+.btn.icon-btn { display: inline-flex; align-items: center; justify-content: center; padding: 5px; }
+.btn.icon-btn:hover:not(:disabled) { padding: 5px; }
 
 /* Disabled is not signalled by opacity alone: the border and the text both drop to the muted
    token and the cursor changes, so the state survives a low-contrast screen. */
@@ -794,11 +835,21 @@ pre:focus-visible {
 /* ---------------------------------------------------------------- composer */
 
 .composer {
+  position: relative;
   border-top: 1px solid var(--line);
   padding-top: 12px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* Top-right of the chat box, over the textarea rather than in the actions row: attaching a file is
+   an action on the draft, not on the turn the bottom row's Send/Interrupt switch governs. */
+.composer-attach {
+  position: absolute;
+  top: 12px;
+  right: 0;
+  z-index: 1;
 }
 
 .composer textarea {
@@ -945,6 +996,86 @@ pre:focus-visible {
 }
 
 .rail-clear { font-size: 11px; padding: 2px 6px; }
+
+/* ---------------------------------------------------------------- office scene */
+
+/* Purely decorative: a running agent visibly walks into a desk here, and walks back out the moment
+   it stops. Nothing here is a source of truth — the list below it already says the same thing in
+   words, which is what makes it safe to be entirely aria-hidden. */
+.office {
+  position: relative;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.office-scene { width: 100%; height: auto; display: block; }
+
+.office-room { fill: var(--panel); }
+.office-door { fill: var(--line); }
+.office-desk { fill: var(--raise); stroke: var(--line); }
+
+.sprite {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: office-enter 0.4s ease-out both;
+}
+
+.sprite.leaving { animation: office-leave 0.65s ease-in both; }
+
+.sprite-body {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: office-bob 1.6s ease-in-out infinite;
+}
+
+/* `--dx`/`--dy` are set per sprite (inline), pointing from its desk back to the door — so every
+   sprite visibly walks from the door to its own desk on the way in, and back on the way out,
+   instead of all sliding in from the same fixed direction. */
+@keyframes office-enter {
+  from { transform: translate(var(--dx), var(--dy)); opacity: 0; }
+  to { transform: translate(0, 0); opacity: 1; }
+}
+
+@keyframes office-leave {
+  from { transform: translate(0, 0); opacity: 1; }
+  to { transform: translate(var(--dx), var(--dy)); opacity: 0; }
+}
+
+@keyframes office-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-1.5px); }
+}
+
+/* The one sprite that is never seated: it has no desk, so nothing here is an SVG attribute — the
+   loop is the whole of its position, which is what keeps it clear of the attribute-vs-CSS-transform
+   conflict the desk sprites have to work around. */
+.orchestrator {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: office-patrol 9s linear infinite;
+}
+
+@keyframes office-patrol {
+  0%   { transform: translate(24px, 20px); }
+  25%  { transform: translate(210px, 20px); }
+  50%  { transform: translate(210px, 100px); }
+  75%  { transform: translate(24px, 100px); }
+  100% { transform: translate(24px, 20px); }
+}
+
+.office-overflow {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--raise);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1px 6px;
+}
 
 .modal-backdrop {
   position: fixed;

@@ -9,6 +9,8 @@ import { catalogRoute, catalogWriteRoutes } from './routes/catalog.js';
 import { fsRoutes } from './routes/fs.js';
 import { hooksRoute, runsRoute, runsDismissRoute } from './routes/hooks.js';
 import { chatRoutes } from './routes/chat.js';
+import { uploadsRoute } from './routes/uploads.js';
+import { createUploadsStore } from './uploads.js';
 import { findAvailablePort } from '../core/port.js';
 import { writeRuntime, clearRuntime, acquireStartLock, restrictStatePaths } from '../core/runtime-file.js';
 import { openDb } from '../store/db.js';
@@ -103,6 +105,7 @@ export async function startDaemon({
       },
     });
     resumes = createResumeScheduler({ sessions: chatSessions, hub, now });
+    const uploads = createUploadsStore({ stateDir });
     const catalog = createCatalog({ claudeDir, projectRoot });
     catalog.watch((next) => hub.broadcast('catalog.changed', { scannedAt: next.scannedAt }));
 
@@ -127,7 +130,8 @@ export async function startDaemon({
       runsRoute({ runs }),
       runsDismissRoute({ runs, hub, now }),
       hooksRoute({ runs, sessions, hub, now }),
-      ...chatRoutes({ sessions: chatSessions, permissions, chat, projects, resumes, now }),
+      ...chatRoutes({ sessions: chatSessions, permissions, chat, projects, resumes, uploads, now }),
+      uploadsRoute({ uploads }),
       staticRoute({ uiDir }),
     ];
 

@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { applyMention, mentionAt, mentionCandidates } from './mentions.js';
-import { droppedPaths, insertPaths } from './dropPaths.js';
+import { droppedPaths, insertPaths, removePath } from './dropPaths.js';
 import { uploadFile } from '../api.js';
 import { AttachIcon } from './icons.jsx';
 
@@ -16,6 +16,9 @@ export function Composer({ busy, onSend, onInterrupt, onReset, disabledReason, c
   // Named apart from dropNotice: a failed upload is an error the user has to notice and act on
   // (retry, pick a smaller file), not the same "here is the name, complete the path yourself" hint.
   const [attachError, setAttachError] = useState(null);
+  // The confirmation half of a successful upload; dismissing one also takes its path back out of
+  // the draft (removePath), since a chip with nothing left to confirm has nothing left to say.
+  const [attached, setAttached] = useState([]);
   const attachInputRef = useRef(null);
   // Where the caret is, so the mention under it can be found: the token being typed is the one at the
   // caret, not the last one in the draft.
@@ -79,8 +82,7 @@ export function Composer({ busy, onSend, onInterrupt, onReset, disabledReason, c
   // Unlike a drop, a click-based file picker never reveals a path — only upload can make an attach
   // button worth anything. Inserted only once every file has uploaded: a partial insert on a partial
   // failure would leave the draft naming a path for a file that never made it to disk.
-  async function attach(files) {
-    const chosen = Array.from(files ?? []);
+  async function attach(chosen) {
     if (chosen.length === 0 || blocked) return;
     setAttaching(true);
     setAttachError(null);
@@ -91,6 +93,7 @@ export function Composer({ busy, onSend, onInterrupt, onReset, disabledReason, c
       setText(next.text);
       setCaret(next.caret);
       moveCaretTo(next.caret);
+      setAttached((prev) => [...prev, ...paths.map((path, i) => ({ path, name: chosen[i].name }))]);
     } catch (err) {
       setAttachError(`Could not attach ${chosen[0]?.name ?? 'the file'}: ${err?.message ?? String(err)}`);
     } finally {
@@ -119,6 +122,7 @@ export function Composer({ busy, onSend, onInterrupt, onReset, disabledReason, c
       setCaret(0);
       setClosedAt(null);
       setDropNotice(null);
+      setAttached([]);
     } catch {
       // The failure is already reported in the transcript by whoever owns the session. Swallowing it
       // here keeps the draft the user would otherwise have to retype, and keeps a rejected send from
@@ -148,9 +152,17 @@ export function Composer({ busy, onSend, onInterrupt, onReset, disabledReason, c
           type="file"
           multiple
           disabled={blocked || attaching}
-          // Reset after every pick, not just success: without it, choosing the same file twice in a
-          // row is a no-op change event and the second attach silently never fires.
-          onChange={(e) => { const files = e.target.files; e.target.value = ''; attach(files); }}
+          // `Array.from` first, reset second — deliberately in that order. `e.target.files` is a
+          // live FileList tied to the input, not a snapshot: in a real browser (jsdom does not
+          // reproduce this, so no test catches a regression here) resetting `value` empties that
+          // same FileList in place, so a reference captured before the reset still reports zero
+          // files the moment it is read afterward. Materialising it into a plain array first is
+          // what a reset can no longer reach.
+          onChange={(e) => {
+            const chosen = Array.from(e.target.files ?? []);
+            e.target.value = '';
+            attach(chosen);
+          }}
         />
         <button
           type="button"
@@ -162,6 +174,27 @@ export function Composer({ busy, onSend, onInterrupt, onReset, disabledReason, c
           <AttachIcon />
         </button>
       </div>
+      {attached.length > 0 && (
+        <ul className="composer-attachments">
+          {attached.map((a) => (
+            <li key={a.path} className="attachment-chip">
+              <span className="attachment-check" aria-hidden="true">✓</span>
+              <span className="attachment-name">{a.name}</span>
+              <button
+                type="button"
+                className="attachment-remove"
+                aria-label={`Remove ${a.name}`}
+                onClick={() => {
+                  setAttached((prev) => prev.filter((p) => p.path !== a.path));
+                  setText((prev) => removePath(prev, a.path));
+                }}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {attachError && (
         <p className="composer-notice" role="alert">
           {attachError}

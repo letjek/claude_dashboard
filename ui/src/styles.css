@@ -946,6 +946,51 @@ pre:focus-visible {
   font-size: 12px;
 }
 
+/* A confirmation that an upload landed, next to the path it already wrote into the draft below —
+   dismissing one takes that path back out of the draft too, via dropPaths.js's removePath. */
+.composer-attachments {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--raise);
+  font-size: 12px;
+}
+
+.attachment-check { color: var(--running); }
+
+.attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.attachment-remove {
+  font: inherit;
+  line-height: 1;
+  padding: 2px 5px;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.attachment-remove:hover { color: var(--error); background: var(--panel); }
+
 /* The mention list sits above the textarea, inside the form's positioning context: the composer is
    at the bottom of the window, so a list drawn downwards would be off screen. */
 .composer form { position: relative; }

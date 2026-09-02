@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { droppedPaths, insertPaths } from '../src/components/dropPaths.js';
+import { droppedPaths, insertPaths, removePath } from '../src/components/dropPaths.js';
 
 describe('droppedPaths', () => {
   it('reads a file URL out of a uri-list drag', () => {
@@ -70,5 +70,25 @@ describe('insertPaths', () => {
   it('spaces the insertion off from a word it lands against', () => {
     const out = insertPaths('lihat', 5, ['/a.txt']);
     expect(out.text).toBe('lihat `/a.txt` ');
+  });
+});
+
+describe('removePath', () => {
+  it('undoes exactly what insertPaths did, including its trailing space', () => {
+    const inserted = insertPaths('review this: ', 13, ['/a/b.sql']);
+    expect(removePath(inserted.text, '/a/b.sql')).toBe('review this: ');
+  });
+
+  it('removes only the named path out of several, without doubling the space between the rest', () => {
+    const inserted = insertPaths('lihat  dulu', 6, ['/a.txt', '/b.txt']);
+    expect(removePath(inserted.text, '/a.txt')).toBe('lihat `/b.txt` dulu');
+  });
+
+  it('leaves the draft untouched when the path is not actually in it', () => {
+    expect(removePath('no paths here', '/a.txt')).toBe('no paths here');
+  });
+
+  it('removes a path with nothing around it, cleanly', () => {
+    expect(removePath('`/a.txt` ', '/a.txt')).toBe('');
   });
 });

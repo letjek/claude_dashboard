@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { Composer } from '../src/components/Composer.jsx';
 
 const catalog = {
@@ -20,8 +20,8 @@ const draw = (over = {}) => {
     catalog,
     ...over,
   };
-  render(<Composer {...props} />);
-  return { ...props, input: screen.getByLabelText(/message to the orchestrator/i) };
+  const { container } = render(<Composer {...props} />);
+  return { ...props, input: screen.getByLabelText(/message to the orchestrator/i), form: container.querySelector('form') };
 };
 
 // Typing into a textarea does not move the caret in jsdom, so the caret is set explicitly — which is
@@ -119,6 +119,67 @@ describe('Composer attach button', () => {
   it('is disabled while a turn is running', () => {
     draw({ busy: true });
     expect(screen.getByLabelText(/attach a file/i).disabled).toBe(true);
+  });
+
+  it('shows a confirmation chip above the composer once a file has actually uploaded', async () => {
+    stubFetch(async () => ({ ok: true, status: 201, json: async () => ({ path: '/tmp/uploads/x/notes.pdf' }) }));
+    draw();
+    select([{ name: 'notes.pdf' }]);
+    expect(await screen.findByText('notes.pdf')).toBeTruthy();
+  });
+
+  it('shows one chip per uploaded file, named for that file alone', async () => {
+    let n = 0;
+    stubFetch(async () => ({ ok: true, status: 201, json: async () => ({ path: `/tmp/${++n}` }) }));
+    draw();
+    select([{ name: 'a.png' }, { name: 'b.png' }]);
+    expect(await screen.findByText('a.png')).toBeTruthy();
+    expect(await screen.findByText('b.png')).toBeTruthy();
+  });
+
+  it('a failed upload never gets a chip', async () => {
+    stubFetch(async () => ({ ok: false, status: 413, json: async () => ({ error: 'too_large' }) }));
+    draw();
+    select([{ name: 'huge.bin' }]);
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+    expect(screen.queryByText('huge.bin')).toBe(null);
+  });
+
+  it('dismissing a chip removes that chip and takes its path back out of the draft', async () => {
+    let n = 0;
+    stubFetch(async () => ({ ok: true, status: 201, json: async () => ({ path: `/tmp/${++n}` }) }));
+    const { input } = draw();
+    select([{ name: 'a.png' }, { name: 'b.png' }]);
+    await screen.findByText('a.png');
+    await screen.findByText('b.png');
+
+    fireEvent.click(screen.getByRole('button', { name: /remove a\.png/i }));
+    expect(screen.queryByText('a.png')).toBe(null);
+    expect(screen.getByText('b.png')).toBeTruthy();
+    // b's path stays, a's is gone, and no double space is left where a's used to be.
+    expect(input.value).toBe('`/tmp/2` ');
+  });
+
+  it('leaves the rest of what was typed alone when a chip is dismissed', async () => {
+    stubFetch(async () => ({ ok: true, status: 201, json: async () => ({ path: '/tmp/notes.pdf' }) }));
+    const { input } = draw();
+    type(input, 'here is the file: ');
+    select([{ name: 'notes.pdf' }]);
+    await screen.findByText('notes.pdf');
+
+    fireEvent.click(screen.getByRole('button', { name: /remove notes\.pdf/i }));
+    expect(input.value).toBe('here is the file: ');
+  });
+
+  it('clears every chip once the message actually sends', async () => {
+    stubFetch(async () => ({ ok: true, status: 201, json: async () => ({ path: '/tmp/notes.pdf' }) }));
+    const { form, input } = draw();
+    select([{ name: 'notes.pdf' }]);
+    await screen.findByText('notes.pdf');
+    type(input, 'here is the file');
+
+    await act(async () => { fireEvent.submit(form); });
+    expect(screen.queryByText('notes.pdf')).toBe(null);
   });
 
   // Safari, and some Chromium builds, silently refuse to open the native file dialog from a

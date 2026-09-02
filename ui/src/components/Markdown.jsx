@@ -10,9 +10,32 @@
 // and unordered lists, blockquotes, horizontal rules, paragraphs, and inline code, bold, italic and
 // links. Anything else renders as its own literal text, which is the honest failure mode.
 
+import { revealPath } from '../api.js';
+
 const SAFE_HREF = /^(https?:\/\/|mailto:)/i;
 
-const INLINE_SOURCE = '(`+)([\\s\\S]*?)\\1|\\*\\*([\\s\\S]+?)\\*\\*|__([\\s\\S]+?)__|\\*([^*\\n]+?)\\*|_([^_\\n]+?)_|\\[([^\\]\\n]*)\\]\\(([^)\\s]+)\\)';
+// A backticked path is the one thing this codebase already writes unambiguously — the composer's
+// own drop and attach handlers wrap every path in backticks for exactly this reason (dropPaths.js).
+// Detecting one only inside a code span, never in bare prose, is what keeps "24/7" or "and/or" from
+// being mistaken for a filesystem path.
+const ABS_PATH = /^(?:\/|~\/)\S+$/;
+
+// Trailing sentence punctuation is excluded from the match itself (`(?<![.,;:!?)])`) rather than
+// trimmed off afterwards, so a URL at the end of a sentence does not swallow the full stop into its
+// href.
+const INLINE_SOURCE = '(`+)([\\s\\S]*?)\\1|\\*\\*([\\s\\S]+?)\\*\\*|__([\\s\\S]+?)__|\\*([^*\\n]+?)\\*|_([^_\\n]+?)_|\\[([^\\]\\n]*)\\]\\(([^)\\s]+)\\)|(https?:\\/\\/[^\\s<>"\']+(?<![.,;:!?)]))';
+
+// A click on the reveal button, not a navigation — the daemon already runs Read and Bash as this
+// user, so pointing its own file manager at one of their files is nothing new. Fire-and-forget:
+// nothing in the transcript needs to reflect the outcome, and a rejected reveal must not become an
+// unhandled promise rejection.
+function PathChip({ path }) {
+  return (
+    <button type="button" className="path-chip" onClick={() => { revealPath(path).catch(() => {}); }}>
+      {path}
+    </button>
+  );
+}
 
 function inline(text, keyPrefix = '') {
   const nodes = [];
@@ -26,13 +49,15 @@ function inline(text, keyPrefix = '') {
   while ((match = pattern.exec(text)) !== null) {
     if (match.index > last) nodes.push(text.slice(last, match.index));
     const key = `${keyPrefix}${match.index}`;
-    const [, , code, strongStar, strongUnder, emStar, emUnder, linkText, href] = match;
+    const [, , code, strongStar, strongUnder, emStar, emUnder, linkText, href, bareUrl] = match;
     if (code !== undefined) {
-      nodes.push(<code key={key}>{code}</code>);
+      nodes.push(ABS_PATH.test(code) ? <PathChip key={key} path={code} /> : <code key={key}>{code}</code>);
     } else if (strongStar !== undefined || strongUnder !== undefined) {
       nodes.push(<strong key={key}>{inline(strongStar ?? strongUnder, `${key}s`)}</strong>);
     } else if (emStar !== undefined || emUnder !== undefined) {
       nodes.push(<em key={key}>{inline(emStar ?? emUnder, `${key}e`)}</em>);
+    } else if (bareUrl !== undefined) {
+      nodes.push(<a key={key} href={bareUrl} target="_blank" rel="noreferrer noopener">{bareUrl}</a>);
     } else if (href !== undefined) {
       // A `javascript:` or `data:` href is rendered as plain text rather than a link. Nothing in a
       // model's answer justifies handing the user a clickable scheme that executes.

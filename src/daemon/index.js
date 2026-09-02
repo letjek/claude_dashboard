@@ -6,7 +6,7 @@ import { generateToken } from './auth.js';
 import { authRoute } from './routes/auth.js';
 import { staticRoute } from './routes/static.js';
 import { catalogRoute, catalogWriteRoutes } from './routes/catalog.js';
-import { fsRoutes } from './routes/fs.js';
+import { fsRoutes, fsRevealRoute } from './routes/fs.js';
 import { hooksRoute, runsRoute, runsDismissRoute } from './routes/hooks.js';
 import { chatRoutes } from './routes/chat.js';
 import { uploadsRoute } from './routes/uploads.js';
@@ -127,6 +127,7 @@ export async function startDaemon({
       // Read-only, and confined to the user's home directory inside the route itself: the add-project
       // form needs to show what is on disk, not a way to enumerate the whole machine.
       ...fsRoutes({ projects }),
+      fsRevealRoute({}),
       runsRoute({ runs }),
       runsDismissRoute({ runs, hub, now }),
       hooksRoute({ runs, sessions, hub, now }),

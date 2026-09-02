@@ -47,6 +47,12 @@ export async function uploadFile(file, { projectPath = null } = {}) {
   return payload;
 }
 
+// A click on an absolute path in the transcript, not a browse — the daemon already runs Read and
+// Bash as this user, so pointing its own Finder/file manager at one of their files is nothing new.
+export function revealPath(path) {
+  return postJson('/api/fs/reveal', { path });
+}
+
 const EVENTS = [
   'run.open', 'run.close', 'run.enrich', 'session.end', 'catalog.changed',
   // Chat rides the same stream. EventSource dispatches only to named listeners, so an event the

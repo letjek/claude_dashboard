@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { Composer } from '../src/components/Composer.jsx';
 
 const catalog = {
@@ -78,6 +78,55 @@ describe('Composer file drops', () => {
     const { input } = draw({ busy: true });
     drop(input, { uriList: 'file:///a.sql' });
     expect(input.value).toBe('');
+  });
+});
+
+describe('Composer attach button', () => {
+  const stubFetch = (impl) => {
+    const fetchMock = vi.fn(impl);
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  };
+  afterEach(() => vi.unstubAllGlobals());
+
+  const attachInput = () => screen.getByLabelText(/attach a file/i);
+  const select = (files) => fireEvent.change(attachInput(), { target: { files } });
+
+  it('uploads a chosen file and writes the returned path into the draft', async () => {
+    stubFetch(async () => ({ ok: true, status: 201, json: async () => ({ path: '/tmp/uploads/x/notes.pdf' }) }));
+    const { input } = draw({ projectPath: '/Users/daps/proj' });
+    select([{ name: 'notes.pdf' }]);
+    await waitFor(() => expect(input.value).toBe('`/tmp/uploads/x/notes.pdf` '));
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/api/uploads?name=notes.pdf'), expect.any(Object));
+  });
+
+  it('uploads every file chosen and inserts every returned path', async () => {
+    let n = 0;
+    stubFetch(async () => ({ ok: true, status: 201, json: async () => ({ path: `/tmp/${++n}` }) }));
+    const { input } = draw();
+    select([{ name: 'a.png' }, { name: 'b.png' }]);
+    await waitFor(() => expect(input.value).toBe('`/tmp/1` `/tmp/2` '));
+  });
+
+  it('reports a failed upload without touching the draft', async () => {
+    stubFetch(async () => ({ ok: false, status: 413, json: async () => ({ error: 'too_large' }) }));
+    const { input } = draw();
+    select([{ name: 'huge.bin' }]);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/huge\.bin/));
+    expect(input.value).toBe('');
+  });
+
+  it('is disabled while a turn is running', () => {
+    draw({ busy: true });
+    expect(screen.getByLabelText(/attach a file/i).disabled).toBe(true);
+  });
+
+  // Safari, and some Chromium builds, silently refuse to open the native file dialog from a
+  // synthetic .click() when the input is `display: none` — no error, the button just does nothing.
+  // The safe way to hide it is the same clip-based technique this file already uses for labels.
+  it('hides the file input without display:none, so a synthetic click can still open the dialog', () => {
+    draw();
+    expect(attachInput().className.split(' ')).toContain('sr-only');
   });
 });
 

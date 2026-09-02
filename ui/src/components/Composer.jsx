@@ -1,15 +1,22 @@
 import { useMemo, useRef, useState } from 'react';
 import { applyMention, mentionAt, mentionCandidates } from './mentions.js';
 import { droppedPaths, insertPaths } from './dropPaths.js';
+import { uploadFile } from '../api.js';
+import { AttachIcon } from './icons.jsx';
 
 // Why the composer knows about `busy` rather than just "disabled": the three controls here are one
 // mode switch. While a turn is running the textarea is closed and Interrupt is the live action;
 // the moment the turn ends — normally, by interrupt, by reset, or by the session dying — the
 // textarea is the live action again. A state where neither is available is a hang report.
-export function Composer({ busy, onSend, onInterrupt, onReset, disabledReason, catalog = null }) {
+export function Composer({ busy, onSend, onInterrupt, onReset, disabledReason, catalog = null, projectPath = null }) {
   const [text, setText] = useState('');
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [pending, setPending] = useState(null);
+  const [attaching, setAttaching] = useState(false);
+  // Named apart from dropNotice: a failed upload is an error the user has to notice and act on
+  // (retry, pick a smaller file), not the same "here is the name, complete the path yourself" hint.
+  const [attachError, setAttachError] = useState(null);
+  const attachInputRef = useRef(null);
   // Where the caret is, so the mention under it can be found: the token being typed is the one at the
   // caret, not the last one in the draft.
   const [caret, setCaret] = useState(0);
@@ -69,6 +76,28 @@ export function Composer({ busy, onSend, onInterrupt, onReset, disabledReason, c
     setDropNotice(found.unresolved.length === 0 ? null : found.unresolved);
   }
 
+  // Unlike a drop, a click-based file picker never reveals a path — only upload can make an attach
+  // button worth anything. Inserted only once every file has uploaded: a partial insert on a partial
+  // failure would leave the draft naming a path for a file that never made it to disk.
+  async function attach(files) {
+    const chosen = Array.from(files ?? []);
+    if (chosen.length === 0 || blocked) return;
+    setAttaching(true);
+    setAttachError(null);
+    try {
+      const paths = [];
+      for (const file of chosen) paths.push((await uploadFile(file, { projectPath })).path);
+      const next = insertPaths(text, caret, paths);
+      setText(next.text);
+      setCaret(next.caret);
+      moveCaretTo(next.caret);
+    } catch (err) {
+      setAttachError(`Could not attach ${chosen[0]?.name ?? 'the file'}: ${err?.message ?? String(err)}`);
+    } finally {
+      setAttaching(false);
+    }
+  }
+
   function accept(candidate) {
     const next = applyMention(text, mention, candidate);
     setText(next.text);
@@ -110,6 +139,36 @@ export function Composer({ busy, onSend, onInterrupt, onReset, disabledReason, c
 
   return (
     <div className="composer">
+      <div className="composer-attach">
+        <label className="sr-only" htmlFor="composer-attach-input">Attach a file</label>
+        <input
+          id="composer-attach-input"
+          className="sr-only"
+          ref={attachInputRef}
+          type="file"
+          multiple
+          disabled={blocked || attaching}
+          // Reset after every pick, not just success: without it, choosing the same file twice in a
+          // row is a no-op change event and the second attach silently never fires.
+          onChange={(e) => { const files = e.target.files; e.target.value = ''; attach(files); }}
+        />
+        <button
+          type="button"
+          className="btn subtle icon-btn"
+          aria-label="Attach file"
+          disabled={blocked || attaching}
+          onClick={() => attachInputRef.current?.click()}
+        >
+          <AttachIcon />
+        </button>
+      </div>
+      {attachError && (
+        <p className="composer-notice" role="alert">
+          {attachError}
+          <button type="button" className="btn subtle" onClick={() => setAttachError(null)}>Dismiss</button>
+        </p>
+      )}
+
       <form
         onSubmit={(e) => { e.preventDefault(); send(); }}
         className={dragging ? 'dragging' : undefined}

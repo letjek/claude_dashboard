@@ -177,6 +177,7 @@ export function Chat({ session, runs, now, catalog = null }) {
       <Composer
         busy={busy}
         disabledReason={disabledReason}
+        projectPath={selected}
         // The same catalog the Agents and Skills pages render, reused as the composer's @ list: the
         // orchestrator can only dispatch what is actually installed.
         catalog={catalog}

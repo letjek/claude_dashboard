@@ -76,10 +76,16 @@ export function planActions(event, { now }) {
       if (isAgentDispatch(event.tool_name) && event.tool_use_id) {
         // A background launch only records who to expect a SubagentStop from. The run stays running,
         // because it is.
+        //
+        // `sessionId` and `startedAt` travel with it so the store can create the row rather than
+        // drop the write: this hook and the PreToolUse that opens the run are two separate processes
+        // racing, and for an async dispatch they fire a millisecond apart — so this one can win.
         if (isAsyncLaunch(event.tool_response)) {
           actions.push({
             type: 'run.launch',
             id: runId(event.session_id, event.tool_use_id),
+            sessionId: event.session_id,
+            startedAt: now,
             agentId: agentIdOf(event.tool_response),
           });
           break;

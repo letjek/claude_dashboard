@@ -11,9 +11,24 @@ const toRun = (r) => r == null ? null : ({
 });
 
 export function createRunsRepo(db) {
-  const insert = db.prepare(`INSERT OR IGNORE INTO runs
+  // An upsert rather than `INSERT OR IGNORE`, because this hook does not reliably arrive first. A
+  // background dispatch's PostToolUse can beat its PreToolUse to the daemon — they are two separate
+  // hook processes and for an async launch they fire a millisecond apart — and `launch` now creates
+  // the row when it does. Ignoring the insert would leave that row without a type, a description or
+  // a prompt for the rest of its life.
+  //
+  // Every detail COALESCEs the existing value first, so this stays as idempotent as the plain IGNORE
+  // was: a replayed hook overwrites nothing, and only the blanks a raced launch left get filled.
+  // started_at takes the earlier of the two — PreToolUse is when the run really began, and the
+  // clock cannot be allowed to jump forward on the row.
+  const insert = db.prepare(`INSERT INTO runs
     (id, session_id, agent_type, description, prompt, status, started_at)
-    VALUES (?, ?, ?, ?, ?, 'running', ?)`);
+    VALUES (?, ?, ?, ?, ?, 'running', ?)
+    ON CONFLICT(id) DO UPDATE SET
+      agent_type  = COALESCE(runs.agent_type, excluded.agent_type),
+      description = COALESCE(runs.description, excluded.description),
+      prompt      = COALESCE(runs.prompt, excluded.prompt),
+      started_at  = MIN(runs.started_at, excluded.started_at)`);
   // `stale` is accepted alongside `running`: a run staled by the 30-minute sweeper or by SessionEnd
   // may still finish for real afterwards, and the genuine PostToolUse must be allowed to overwrite the
   // guess with the actual status, duration, and result. Long-running agents are the normal case here.
@@ -27,6 +42,16 @@ export function createRunsRepo(db) {
   // Only ever applied to a run that is still open: a background dispatch records who to expect a
   // SubagentStop from, and a row that already finished has nothing left to wait for.
   const launchStmt = db.prepare("UPDATE runs SET agent_id = ? WHERE id = ? AND status = 'running'");
+  // The same write, but able to create the row it is meant to be updating. This one exists because a
+  // bare UPDATE silently dropped the agent id whenever PostToolUse beat PreToolUse to the daemon —
+  // two racing hook processes, a millisecond apart for an async dispatch — and that id is the only
+  // exact join between a launch and the SubagentStop that ends it. Losing it left the run `running`
+  // until the 30-minute sweeper and sent its result to whichever row the fallback heuristic picked.
+  // The DO UPDATE keeps its `status = 'running'` guard, so a finished run is still refused.
+  const launchUpsertStmt = db.prepare(`INSERT INTO runs (id, session_id, status, started_at, agent_id)
+    VALUES (?, ?, 'running', ?, ?)
+    ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id
+    WHERE runs.status = 'running'`);
   const byAgentStmt = db.prepare("SELECT * FROM runs WHERE agent_id = ? AND status = 'running' ORDER BY started_at ASC LIMIT 1");
   // Every read of a whole run goes through this projection, so `projectPath` is present on every row
   // the daemon hands out — the live rail scopes itself by it, and a row that arrived by broadcast
@@ -84,8 +109,16 @@ export function createRunsRepo(db) {
     },
     // A background dispatch: the tool returned, the agent did not. Recording its id is all this
     // does — the run stays running, because it is, and SubagentStop closes it later.
-    launch({ id, agentId }) {
-      return launchStmt.run(agentId ?? null, id).changes > 0;
+    //
+    // Creates the row when it is not there yet, which is the fix for the hook ordering race. Falls
+    // back to the plain UPDATE when there is nothing worth creating a row for: without an agent id
+    // there is no join to preserve, and without a session and a start time a row cannot be made at
+    // all — session_id is NOT NULL, and a guessed start time would show a wrong elapsed clock.
+    launch({ id, agentId, sessionId = null, startedAt = null }) {
+      if (agentId == null || sessionId == null || startedAt == null) {
+        return launchStmt.run(agentId ?? null, id).changes > 0;
+      }
+      return launchUpsertStmt.run(id, sessionId, startedAt, agentId).changes > 0;
     },
 
     /**

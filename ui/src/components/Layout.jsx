@@ -7,11 +7,13 @@ const NAV = [
   { path: '/activity', label: 'Activity' },
 ];
 
-export function Layout({ rail, sidebar, children }) {
+export function Layout({ rail, sidebar, children, officeExpanded = false }) {
   const { path, navigate } = useRoute();
 
   return (
-    <div className="shell">
+    // The chat column collapses to zero width when the office is expanded — the page still has its
+    // nav, so this is a wider look at the rail rather than a mode you have to escape from.
+    <div className={`shell${officeExpanded ? ' office-expanded' : ''}`}>
       <nav aria-label="Sections">
         <h1>agentpanel</h1>
         <ul>

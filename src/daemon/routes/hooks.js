@@ -30,7 +30,7 @@ export function applyActions(actions, { runs, sessions, hub }) {
       // A background dispatch returned but its agent did not: record the id the SubagentStop will
       // arrive under, and broadcast the row so the rail keeps it running rather than dropping it.
       case 'run.launch':
-        if (runs.launch({ id: action.id, agentId: action.agentId })) hub.broadcast('run.enrich', runs.get(action.id));
+        if (runs.launch(action)) hub.broadcast('run.enrich', runs.get(action.id));
         break;
       case 'run.finish': {
         const outcome = runs.finish(action.match, action.patch);

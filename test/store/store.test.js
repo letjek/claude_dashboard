@@ -120,6 +120,55 @@ test('launch records the agent id and leaves the run running', () => {
   assert.equal(row.agentId, 'ag_7');
 });
 
+// The bug this pins cost two of five subagents their completion. PreToolUse and PostToolUse reach
+// the daemon as two separate hook processes racing, and for an async dispatch they fire a
+// millisecond apart — so PostToolUse can win. `launch` used to be a bare UPDATE, so losing that race
+// discarded the agent id with no retry and no log, and the only exact join between a launch and the
+// SubagentStop that ends it was gone. The run then sat `running` until the 30-minute sweeper, and its
+// result landed on whichever other row the fallback heuristic picked.
+test('launch arriving before open keeps the agent id instead of discarding it', () => {
+  const runs = createRunsRepo(fresh());
+  assert.equal(runs.launch({ id: 's1:t1', agentId: 'ag_7', sessionId: 's1', startedAt: 1200 }), true);
+  assert.equal(runs.get('s1:t1').agentId, 'ag_7');
+  assert.equal(runs.get('s1:t1').status, 'running');
+});
+
+test('the open that lost the race still fills in the details, and does not move the start time later', () => {
+  const runs = createRunsRepo(fresh());
+  runs.launch({ id: 's1:t1', agentId: 'ag_7', sessionId: 's1', startedAt: 1200 });
+  runs.open(baseRun);                                  // startedAt 1000: the real, earlier one
+  const row = runs.get('s1:t1');
+  assert.equal(row.agentType, 'programmer');
+  assert.equal(row.description, 'do a thing');
+  assert.equal(row.prompt, 'p');
+  assert.equal(row.agentId, 'ag_7');                   // not lost to the later insert
+  assert.equal(row.startedAt, 1000);                   // PreToolUse is when it really started
+});
+
+test('a run whose launch overtook its open still closes on its own subagent stop', () => {
+  const runs = createRunsRepo(fresh());
+  runs.launch({ id: 's1:t1', agentId: 'ag_7', sessionId: 's1', startedAt: 1200 });
+  runs.open(baseRun);
+  const outcome = runs.finish(
+    { agentId: 'ag_7', sessionId: 's1', agentType: 'programmer' },
+    { endedAt: 61_000, transcriptPath: '/a.jsonl', resultPreview: 'done here' },
+  );
+  assert.deepEqual(outcome, { id: 's1:t1', closed: true });
+  const row = runs.get('s1:t1');
+  assert.equal(row.status, 'done');
+  assert.equal(row.durationMs, 60_000);
+  assert.equal(row.resultPreview, 'done here');
+});
+
+// Without a real agent id there is nothing to record, and inserting anyway would leave a row with no
+// type, no description and no prompt that nothing will ever close — a worse artefact than the
+// dropped write it replaced.
+test('a launch with no agent id creates nothing when the run is not there yet', () => {
+  const runs = createRunsRepo(fresh());
+  assert.equal(runs.launch({ id: 's1:t1', agentId: null, sessionId: 's1', startedAt: 1200 }), false);
+  assert.equal(runs.get('s1:t1'), null);
+});
+
 test('launch refuses a run that is already finished', () => {
   const runs = createRunsRepo(fresh());
   runs.open(baseRun);

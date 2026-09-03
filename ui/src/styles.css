@@ -428,8 +428,11 @@ table.activity td:first-child {
   /* Held at the tallest frame rather than the shortest: three stubs read as a broken glyph, three
      full bars read as an indicator that simply is not moving. */
   .working i { animation: none; height: 10px; opacity: 1; }
-  .sprite, .sprite.leaving, .sprite-body { animation: none; }
-  .orchestrator { animation: none; }
+  /* The bob is all that is left in CSS. The walking itself is a JS tick, which no stylesheet can
+     stop — OfficeScene reads the same query with matchMedia and does not start the interval at all,
+     seating everyone at their desks instead. */
+  .sprite-body { animation: none; }
+  .shell, main { transition: none; }
 }
 
 @media (max-width: 900px) {
@@ -1063,71 +1066,132 @@ pre:focus-visible {
 
 /* ---------------------------------------------------------------- office scene */
 
-/* Purely decorative: a running agent visibly walks into a desk here, and walks back out the moment
-   it stops. Nothing here is a source of truth — the list below it already says the same thing in
-   words, which is what makes it safe to be entirely aria-hidden. */
+/* Purely decorative: a running agent walks in through the door here, works at a desk, wanders off
+   for coffee, and walks back out the moment its run stops. Nothing in the drawing is a source of
+   truth — the list below it already says the same thing in words, which is what makes the scene
+   itself safe to be entirely aria-hidden. Positions come from officeWorld.js via JS; the only
+   animation left in CSS is the idle bob.
+
+   Every colour is a rect fill rather than an image: no sprite sheet, no tileset, nothing anyone
+   else holds copyright in. A warm, lit room reads well inside a dark shell — it looks like a window
+   into somewhere rather than another dark panel. */
 .office {
+  --off-ink: #2b1d14;
+
   position: relative;
   margin-bottom: 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: var(--bg);
+  overflow: hidden;
+  background: #6d4a30;
 }
 
-.office-scene { width: 100%; height: auto; display: block; }
-
-.office-room { fill: var(--panel); }
-.office-door { fill: var(--line); }
-.office-desk { fill: var(--raise); stroke: var(--line); }
-
-.sprite {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: office-enter 0.4s ease-out both;
+.office-scene {
+  width: 100%;
+  height: auto;
+  display: block;
+  /* The whole look depends on this: without it every 1px rect is antialiased into a grey smear and
+     the pixel grid disappears. */
+  shape-rendering: crispEdges;
 }
 
-.sprite.leaving { animation: office-leave 0.65s ease-in both; }
+.off-wall { fill: #d8b483; }
+.off-wall-shade { fill: #c19a6b; }
+.off-floor-a { fill: #a9743f; }
+.off-floor-b { fill: #a06e3b; }
+.off-seam { fill: #90612f; }
+.off-wood { fill: #8a5a33; }
+.off-wood-dark { fill: #5c3a20; }
+.off-desk { fill: #b07f4c; }
+.off-desk-lit { fill: #c99a63; }
+.off-chair { fill: #7a4e2e; }
+.off-chair-arm { fill: #5c3a20; }
+.off-glass { fill: #6fb8d9; }
+.off-glass-lit { fill: #a5dcef; }
+.off-rug { fill: #a33f3f; }
+.off-rug-edge { fill: #d9a03c; }
+.off-rug-inner { fill: #8c3232; }
+.off-plant { fill: #4c7d3a; }
+.off-plant-lit { fill: #6ba34d; }
+.off-pot { fill: #a05a3a; }
+.off-pot-rim { fill: #bd7048; }
+.off-metal { fill: #b9c2cc; }
+.off-metal-dark { fill: #6e7883; }
+.off-screen-frame { fill: #2b2f38; }
+.off-screen { fill: #3f8fb0; }
+.off-screen-line { fill: #a5dcef; }
+.off-board { fill: #eef1f4; }
+.off-board-ink { fill: #4b5563; }
+.off-mug { fill: #e05c5c; }
+.off-mug-alt { fill: #4c7d3a; }
+.off-paper { fill: #f2ead6; }
+.off-eye { fill: var(--off-ink); }
+.sprite-legs { fill: #3f4a5a; }
+.off-shadow { fill: rgba(43, 29, 20, 0.35); }
 
+/* Feet-planted bob while standing still, dropped while walking: the legs already carry the motion,
+   and bobbing on top of them reads as a limp. */
 .sprite-body {
   transform-box: fill-box;
   transform-origin: center;
-  animation: office-bob 1.6s ease-in-out infinite;
+  animation: office-bob 1.8s ease-in-out infinite;
 }
 
-/* `--dx`/`--dy` are set per sprite (inline), pointing from its desk back to the door — so every
-   sprite visibly walks from the door to its own desk on the way in, and back on the way out,
-   instead of all sliding in from the same fixed direction. */
-@keyframes office-enter {
-  from { transform: translate(var(--dx), var(--dy)); opacity: 0; }
-  to { transform: translate(0, 0); opacity: 1; }
-}
-
-@keyframes office-leave {
-  from { transform: translate(0, 0); opacity: 1; }
-  to { transform: translate(var(--dx), var(--dy)); opacity: 0; }
-}
+.sprite.walking .sprite-body { animation: none; }
+.sprite.leaving { opacity: 0.75; }
 
 @keyframes office-bob {
   0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-1.5px); }
+  50% { transform: translateY(-1px); }
 }
 
-/* The one sprite that is never seated: it has no desk, so nothing here is an SVG attribute — the
-   loop is the whole of its position, which is what keeps it clear of the attribute-vs-CSS-transform
-   conflict the desk sprites have to work around. */
-.orchestrator {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: office-patrol 9s linear infinite;
+.off-bubble { fill: #f7f2e4; stroke: #5c3a20; stroke-width: 1; }
+/* The tail is unstroked so it reads as part of the bubble rather than a box stuck under it. */
+.off-bubble-tail { fill: #f7f2e4; }
+
+.off-bubble-text {
+  fill: var(--off-ink);
+  font-family: var(--mono);
+  font-size: 6px;
+  /* The one thing in the scene that must NOT be crisp-edged: 7px glyphs without antialiasing are
+     unreadable. */
+  shape-rendering: auto;
 }
 
-@keyframes office-patrol {
-  0%   { transform: translate(24px, 20px); }
-  25%  { transform: translate(210px, 20px); }
-  50%  { transform: translate(210px, 100px); }
-  75%  { transform: translate(24px, 100px); }
-  100% { transform: translate(24px, 20px); }
+.office-zoom {
+  position: absolute;
+  bottom: 4px;
+  right: 6px;
+  font-size: 11px;
+  padding: 2px 6px;
+  background: rgba(20, 14, 10, 0.7);
+  border-color: rgba(247, 242, 228, 0.35);
+  color: #f7f2e4;
 }
+
+.office-zoom:hover { background: rgba(20, 14, 10, 0.9); }
+
+/* Expanded: the chat column collapses to nothing and the rail takes the space, so the office is
+   something you can actually watch while you wait. The scene keeps its aspect ratio, so what grows
+   is the pixel size — which is the point of asking for a closer look. */
+.shell { transition: grid-template-columns 260ms ease; }
+
+/* Guarded by min-width rather than left to cascade order: the narrow-screen rule that collapses the
+   shell to a single column lives hundreds of lines earlier in this file, so an unguarded
+   `.office-expanded` here would out-specify it and put three columns back on a phone. */
+@media (min-width: 901px) {
+  .shell.office-expanded { grid-template-columns: 200px 0 1fr; }
+}
+
+main { transition: opacity 200ms ease, padding 260ms ease; }
+
+.shell.office-expanded main {
+  padding: 0;
+  overflow: hidden;
+  opacity: 0;
+}
+
+.shell.office-expanded .office { margin-bottom: 16px; }
 
 .office-overflow {
   position: absolute;

@@ -22,6 +22,7 @@ export function App() {
   const [catalogError, setCatalogError] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [hooksInstalled, setHooksInstalled] = useState(true);
+  const [officeExpanded, setOfficeExpanded] = useState(false);
   const { path } = useRoute();
   const streamed = useRef(new Set());
   const session = useChatSession();
@@ -105,6 +106,9 @@ export function App() {
 
   return (
     <Layout
+      // Lives here rather than in the rail because it collapses the chat column, which is the
+      // shell's business — the rail only owns the button that asks for it.
+      officeExpanded={officeExpanded}
       rail={(
         <LiveRail
           runs={runs}
@@ -113,6 +117,8 @@ export function App() {
           // Scoped to the selected project: a run belongs to one working directory, and the rail was
           // still showing agents from whatever project was open before this one.
           projectPath={session.selected}
+          officeExpanded={officeExpanded}
+          onToggleOffice={() => setOfficeExpanded((expanded) => !expanded)}
         />
       )}
       sidebar={(

@@ -76,7 +76,23 @@ test('PostToolUse for an async dispatch launches the run instead of closing it',
   const actions = planActions(evt, { now: NOW });
   assert.equal(actions.some((a) => a.type === 'run.close'), false);
   const launch = actions.find((a) => a.type === 'run.launch');
-  assert.deepEqual(launch, { type: 'run.launch', id: 's1:tu_1', agentId: 'ag_7' });
+  assert.deepEqual(launch, {
+    type: 'run.launch', id: 's1:tu_1', agentId: 'ag_7', sessionId: 's1', startedAt: NOW,
+  });
+});
+
+// PreToolUse and PostToolUse are delivered by two separate hook processes racing each other, and for
+// an async dispatch they fire within a millisecond or two. The launch therefore has to carry enough
+// to create the row itself, because it may well arrive before the open that was supposed to.
+test('an async launch carries the session and time it would need to create the row itself', () => {
+  const evt = {
+    ...pre,
+    hook_event_name: 'PostToolUse',
+    tool_response: { isAsync: true, agentId: 'ag_7' },
+  };
+  const launch = planActions(evt, { now: NOW }).find((a) => a.type === 'run.launch');
+  assert.equal(launch.sessionId, 's1');
+  assert.equal(launch.startedAt, NOW);
 });
 
 test('an async launch without an agentId still refuses to close the run', () => {

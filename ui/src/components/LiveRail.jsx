@@ -20,7 +20,14 @@ function explainClear(err) {
   return `${err?.message ?? String(err)} — try again when the connection is back`;
 }
 
-export function LiveRail({ runs, now, taskActivity = {}, projectPath = null }) {
+export function LiveRail({
+  runs,
+  now,
+  taskActivity = {},
+  projectPath = null,
+  officeExpanded = false,
+  onToggleOffice = null,
+}) {
   // One row open at a time, and kept here rather than in App: which row a user has expanded is a
   // property of this panel, and lifting it would re-render the whole shell on every click.
   const [openId, setOpenId] = useState(null);
@@ -68,7 +75,14 @@ export function LiveRail({ runs, now, taskActivity = {}, projectPath = null }) {
     // list item, and the default set is what actually catches those. The per-second elapsed clock
     // that ticks inside every row is marked aria-hidden in RunRow so it never gets announced.
     <aside className="rail" aria-label="Live agents" aria-live="polite">
-      <OfficeScene runs={ordered} />
+      <OfficeScene
+        runs={ordered}
+        // The same activity the rows below show, so a thought bubble is a shorthand for the row
+        // rather than a second, possibly disagreeing, account of what an agent is doing.
+        taskActivity={taskActivity}
+        expanded={officeExpanded}
+        onToggleExpand={onToggleOffice}
+      />
       <div className="rail-head">
         <h2>Live agents</h2>
         {finished.length > 0 && (

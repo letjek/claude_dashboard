@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react';
 import { LiveRail } from '../src/components/LiveRail.jsx';
 import { formatElapsed } from '../src/components/RunRow.jsx';
 import { upsertRun, mergeSnapshot, visibleRuns, finishedIds, dropRuns } from '../src/components/runList.js';
@@ -8,6 +8,11 @@ const run = (over = {}) => ({
   id: 's1:t1', sessionId: 's1', agentType: 'programmer', description: 'add auth',
   status: 'running', startedAt: 1000, endedAt: null, durationMs: null, projectPath: '/proj', ...over,
 });
+
+// Scoped to the row list, because the office scene above it now puts a running agent's description
+// in a thought bubble too. A bare screen.getByText for a description finds both and throws — and
+// these tests are about the rows, so the row list is the right place to be looking anyway.
+const inRows = () => within(screen.getByRole('list'));
 
 // Clearing used to live only in this component's own useState, so `GET /api/runs` served the same
 // rows again on the next load and three cleared rows came back. The press has to reach the daemon.
@@ -39,7 +44,7 @@ describe('LiveRail', () => {
   it('shows agent type, description, and a live elapsed time', () => {
     render(<LiveRail runs={[run()]} now={135_000} />);
     expect(screen.getByText('programmer')).toBeTruthy();
-    expect(screen.getByText('add auth')).toBeTruthy();
+    expect(inRows().getByText('add auth')).toBeTruthy();
     expect(screen.getByText('2m14s')).toBeTruthy();
   });
 
@@ -190,6 +195,8 @@ describe('LiveRail run detail', () => {
         taskActivity={{ t1: { kind: 'task_progress', lastToolName: 'Grep', usage: { input_tokens: 900, output_tokens: 100 } } }}
       />,
     );
+    // Once, not twice: the office bubble above deliberately does not repeat the tool name — it shows
+    // what the agent was asked to do instead.
     expect(screen.getByText('running Grep')).toBeTruthy();
     fireEvent.click(screen.getAllByRole('button')[0]);
     expect(screen.getByText('1,000')).toBeTruthy();
@@ -246,7 +253,7 @@ describe('LiveRail scoping', () => {
 
   it('shows only the selected project\'s agents', () => {
     render(<LiveRail {...props} projectPath="/proj" runs={[run({ id: 'a', description: 'mine' }), run({ id: 'b', description: 'theirs', projectPath: '/other' })]} />);
-    expect(screen.getByText('mine')).toBeTruthy();
+    expect(inRows().getByText('mine')).toBeTruthy();
     expect(screen.queryByText('theirs')).toBe(null);
   });
 
@@ -262,7 +269,7 @@ describe('LiveRail scoping', () => {
       run({ id: 'b', description: 'all done', status: 'done', durationMs: 1000 }),
     ]} />);
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /clear finished/i })); });
-    expect(screen.getByText('still working')).toBeTruthy();
+    expect(inRows().getByText('still working')).toBeTruthy();
     expect(screen.queryByText('all done')).toBe(null);
   });
 
@@ -305,7 +312,7 @@ describe('LiveRail clearing is durable', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /clear finished/i }));
     expect(screen.queryByText('all done')).toBe(null);
-    expect(screen.getByText('still working')).toBeTruthy();
+    expect(inRows().getByText('still working')).toBeTruthy();
 
     await act(async () => { release(); });
   });
